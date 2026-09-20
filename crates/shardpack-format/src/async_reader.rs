@@ -4,9 +4,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
     BLOCK_HEADER_SIZE, BlockHeader, ContentFingerprint, Error, RECORD_ENTRY_SIZE, ReaderLimits,
-    Record, RecordEntry, Result, SHARD_HEADER_SIZE, ShardHeader,
-    checksum::{crc32c, crc32c_slices},
-    encryption,
+    Record, RecordEntry, Result, SHARD_HEADER_SIZE, ShardHeader, checksum::crc32c, encryption,
 };
 
 pub struct AsyncShardReader<R> {
@@ -20,6 +18,8 @@ pub struct AsyncShardReader<R> {
     current_block_start_offset: u64,
     current_block_record_index: u32,
     decryption_key: Option<crate::EncryptionKey>,
+    derived_decryption_key: Option<([u8; 16], crate::EncryptionKey)>,
+    expected_encryption: Option<crate::EncryptionAlgorithm>,
     collect_content_fingerprint: bool,
 }
 
@@ -54,7 +54,15 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             .read_exact(&mut header)
             .await
             .map_err(|source| Error::Io { source })?;
-        ShardHeader::decode(&header)?;
+        let header = ShardHeader::decode(&header)?;
+        let expected_encryption = if header.flags == 1 {
+            if decryption_key.is_none() {
+                return Err(Error::MissingDecryptionKey);
+            }
+            crate::EncryptionAlgorithm::Aes256Gcm
+        } else {
+            crate::EncryptionAlgorithm::None
+        };
         Ok(Self {
             input,
             pending: VecDeque::new(),
@@ -66,6 +74,8 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             current_block_start_offset: SHARD_HEADER_SIZE as u64,
             current_block_record_index: 0,
             decryption_key,
+            derived_decryption_key: None,
+            expected_encryption: Some(expected_encryption),
             collect_content_fingerprint: true,
         })
     }
@@ -86,6 +96,11 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
         block_start_offset: u64,
         decryption_key: Option<crate::EncryptionKey>,
     ) -> Self {
+        let expected_encryption = Some(if decryption_key.is_some() {
+            crate::EncryptionAlgorithm::Aes256Gcm
+        } else {
+            crate::EncryptionAlgorithm::None
+        });
         Self {
             input,
             pending: VecDeque::new(),
@@ -97,6 +112,8 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             current_block_start_offset: block_start_offset,
             current_block_record_index: 0,
             decryption_key,
+            derived_decryption_key: None,
+            expected_encryption,
             collect_content_fingerprint: true,
         }
     }
@@ -139,6 +156,13 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
     #[must_use]
     pub const fn records_yielded(&self) -> u64 {
         self.records_yielded
+    }
+
+    /// Records already decoded from the current block. Returning one of these
+    /// does not poll the underlying object stream.
+    #[must_use]
+    pub fn buffered_records(&self) -> usize {
+        self.pending.len()
     }
 
     #[must_use]
@@ -184,6 +208,24 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             .await
             .map_err(map_block_read_error)?;
         let header = BlockHeader::decode(&raw_header)?;
+        if self.block_count == u32::MAX {
+            return Err(Error::ResourceLimit {
+                field: "block_count",
+                actual: u64::from(u32::MAX) + 1,
+                limit: u64::from(u32::MAX),
+            });
+        }
+        if self
+            .expected_encryption
+            .is_some_and(|expected| header.encryption != expected)
+        {
+            return Err(Error::InvalidBlockHeader {
+                reason: "block encryption differs from shard header",
+            });
+        }
+        if header.encryption != crate::EncryptionAlgorithm::None && self.decryption_key.is_none() {
+            return Err(Error::MissingDecryptionKey);
+        }
         check_limit(
             "record_count",
             u64::from(header.record_count),
@@ -221,22 +263,23 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             })?;
         let (directory, stored, physical_body_bytes) =
             if header.encryption == crate::EncryptionAlgorithm::None {
-                let mut directory = vec![0; expected_directory];
-                let mut stored = vec![0; stored_size];
+                let body_size = expected_directory.checked_add(stored_size).ok_or(
+                    Error::InvalidBlockHeader {
+                        reason: "block body size overflow",
+                    },
+                )?;
+                let mut body = vec![0; body_size];
                 self.input
-                    .read_exact(&mut directory)
+                    .read_exact(&mut body)
                     .await
                     .map_err(map_block_read_error)?;
-                self.input
-                    .read_exact(&mut stored)
-                    .await
-                    .map_err(map_block_read_error)?;
-                if crc32c_slices(&directory, &stored) != header.payload_crc32c {
+                if crc32c(&body) != header.payload_crc32c {
                     return Err(Error::PayloadChecksumMismatch);
                 }
+                let body = bytes::Bytes::from(body);
                 (
-                    bytes::Bytes::from(directory),
-                    bytes::Bytes::from(stored),
+                    body.slice(..expected_directory),
+                    body.slice(expected_directory..),
                     header.directory_bytes as u64 + header.stored_payload_bytes,
                 )
             } else {
@@ -248,13 +291,25 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
                 if crc32c(&body) != header.payload_crc32c {
                     return Err(Error::PayloadChecksumMismatch);
                 }
-                let key = self
-                    .decryption_key
+                if self
+                    .derived_decryption_key
                     .as_ref()
-                    .ok_or(Error::MissingDecryptionKey)?;
-                let key = key.derive_for_shard(&header.key_salt);
+                    .is_none_or(|(salt, _)| salt != &header.key_salt)
+                {
+                    let key = self
+                        .decryption_key
+                        .as_ref()
+                        .ok_or(Error::MissingDecryptionKey)?
+                        .derive_for_shard(&header.key_salt);
+                    self.derived_decryption_key = Some((header.key_salt, key));
+                }
+                let key = &self
+                    .derived_decryption_key
+                    .as_ref()
+                    .expect("derived key was initialized")
+                    .1;
                 encryption::decrypt(
-                    &key,
+                    key,
                     &encryption::block_nonce(header.nonce_counter),
                     &raw_header[..56],
                     &mut body,
@@ -282,6 +337,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
         let mut offset = 0_usize;
         let (entries, remainder) = directory.as_chunks::<RECORD_ENTRY_SIZE>();
         debug_assert!(remainder.is_empty());
+        self.pending.reserve(entries.len());
         for raw_entry in entries {
             let entry = RecordEntry::decode(raw_entry)?;
             let end =
@@ -311,10 +367,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
                 reason: "unreferenced payload bytes",
             });
         }
-        self.block_count = self
-            .block_count
-            .checked_add(1)
-            .expect("block count overflow");
+        self.block_count += 1;
         Ok(true)
     }
 }
@@ -348,7 +401,10 @@ mod tests {
 
     use tokio::io::{AsyncRead, ReadBuf};
 
-    use crate::{AsyncShardReader, BlockCodec, EncryptionKey, ShardWriter, WriterOptions};
+    use crate::{
+        AsyncShardReader, BLOCK_HEADER_SIZE, BlockCodec, BlockHeader, EncryptionAlgorithm,
+        EncryptionKey, Error, ReaderLimits, SHARD_HEADER_SIZE, ShardWriter, WriterOptions,
+    };
 
     struct ChunkedReader<R> {
         inner: R,
@@ -403,6 +459,10 @@ mod tests {
             ShardWriter::new_encrypted(Vec::new(), WriterOptions::default(), key.clone()).unwrap();
         writer.add_record([5; 16], 9, b"encrypted").unwrap();
         let bytes = writer.finish().unwrap().0;
+        assert!(matches!(
+            AsyncShardReader::new(std::io::Cursor::new(bytes.clone())).await,
+            Err(Error::MissingDecryptionKey)
+        ));
         let mut reader = AsyncShardReader::new_encrypted(std::io::Cursor::new(bytes), key)
             .await
             .unwrap();
@@ -410,6 +470,38 @@ mod tests {
         assert_eq!(record.sample_id, [5; 16]);
         assert_eq!(record.payload, "encrypted");
         assert!(reader.next_record().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn block_boundary_resume_enforces_the_expected_encryption_mode() {
+        let key = EncryptionKey::new([0x71; 32]);
+        let mut writer =
+            ShardWriter::new_encrypted(Vec::new(), WriterOptions::default(), key.clone()).unwrap();
+        writer.add_record([7; 16], 0, b"record").unwrap();
+        let mut bytes = writer.finish().unwrap().0;
+        let block_end = SHARD_HEADER_SIZE + BLOCK_HEADER_SIZE;
+        let raw_header: [u8; BLOCK_HEADER_SIZE] =
+            bytes[SHARD_HEADER_SIZE..block_end].try_into().unwrap();
+        let mut header = BlockHeader::decode(&raw_header).unwrap();
+        header.version = 1;
+        header.encryption = EncryptionAlgorithm::None;
+        header.key_salt = [0; 16];
+        header.nonce_counter = 0;
+        bytes[SHARD_HEADER_SIZE..block_end].copy_from_slice(&header.encode());
+
+        let mut reader = AsyncShardReader::from_block_boundary_with_key(
+            std::io::Cursor::new(bytes[SHARD_HEADER_SIZE..].to_vec()),
+            ReaderLimits::default(),
+            0,
+            SHARD_HEADER_SIZE as u64,
+            Some(key),
+        );
+        assert!(matches!(
+            reader.next_record().await,
+            Err(Error::InvalidBlockHeader {
+                reason: "block encryption differs from shard header"
+            })
+        ));
     }
 
     #[tokio::test]

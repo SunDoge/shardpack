@@ -1,11 +1,15 @@
+use std::sync::Arc;
+
 use shardpack_cache::LocalCache;
 use shardpack_format::{AsyncReaderPosition, AsyncShardReader, Blake3Reader, ReaderLimits};
 use shardpack_manifest::{ShardId, proto};
-use shardpack_storage::{AsyncObjectReader, Store};
+use shardpack_storage::{AsyncObjectReader, Store, StoreRegistry};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
     DistributedContext, EncodedRecord, Error, NetworkPrefetch, NodeAffinity, Result,
-    RuntimeMetrics, affinity_assigned_shards, assigned_shards, prefetch::PrefetchQueue,
+    RuntimeMetrics, affinity_assigned_shard_indices, assigned_shard_indices,
+    prefetch::PrefetchQueue,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +55,14 @@ pub struct LoaderCheckpoint {
     pub node_affinity: Option<NodeAffinity>,
 }
 
+#[derive(Clone, Copy)]
+struct RetryPosition {
+    next_shard_index: usize,
+    current_shard_id: Option<[u8; 32]>,
+    records_yielded_in_current_shard: u64,
+    reader: AsyncReaderPosition,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IncompleteLayoutPolicy {
     #[default]
@@ -59,11 +71,11 @@ pub enum IncompleteLayoutPolicy {
 }
 
 pub struct DatasetReader {
-    store: Store,
-    layout: proto::LayoutManifest,
-    shards: Vec<proto::ShardMeta>,
+    stores: StoreRegistry,
+    layout: Arc<proto::LayoutManifest>,
+    shard_order: Vec<usize>,
     next_shard_index: usize,
-    current_meta: Option<proto::ShardMeta>,
+    current_shard_index: Option<usize>,
     current: Option<AsyncShardReader<Blake3Reader<AsyncObjectReader>>>,
     cache: Option<LocalCache>,
     epoch: u64,
@@ -79,28 +91,59 @@ pub struct DatasetReader {
 }
 
 impl DatasetReader {
-    pub fn new(store: Store, layout: proto::LayoutManifest) -> Result<Self> {
+    pub fn new(store: Store, layout: impl Into<Arc<proto::LayoutManifest>>) -> Result<Self> {
         Self::new_with_incomplete_policy(store, layout, IncompleteLayoutPolicy::Reject)
     }
 
     pub fn new_with_incomplete_policy(
         store: Store,
-        layout: proto::LayoutManifest,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
         incomplete_policy: IncompleteLayoutPolicy,
     ) -> Result<Self> {
+        let layout = layout.into();
         shardpack_manifest::validate_layout(&layout)
             .map_err(|source| Error::Manifest { source })?;
+        let stores = registry_for_single_store(store, &layout)?;
+        Self::new_with_registry_and_incomplete_policy(stores, layout, incomplete_policy)
+    }
+
+    pub fn new_with_registry(
+        stores: StoreRegistry,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
+    ) -> Result<Self> {
+        Self::new_with_registry_and_incomplete_policy(
+            stores,
+            layout,
+            IncompleteLayoutPolicy::Reject,
+        )
+    }
+
+    pub fn new_with_registry_and_incomplete_policy(
+        stores: StoreRegistry,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
+        incomplete_policy: IncompleteLayoutPolicy,
+    ) -> Result<Self> {
+        let layout = layout.into();
+        shardpack_manifest::validate_layout(&layout)
+            .map_err(|source| Error::Manifest { source })?;
+        for shard in &layout.shards {
+            let location = shardpack_manifest::object_location(shard);
+            stores
+                .get(&location.store_id)
+                .map_err(|source| Error::Storage { source })?;
+        }
         if proto::LayoutState::try_from(layout.state) == Ok(proto::LayoutState::Incomplete)
             && incomplete_policy == IncompleteLayoutPolicy::Reject
         {
             return Err(Error::IncompleteLayout);
         }
+        let shard_order = (0..layout.shards.len()).collect();
         Ok(Self {
-            store,
-            shards: layout.shards.clone(),
+            stores,
             layout,
+            shard_order,
             next_shard_index: 0,
-            current_meta: None,
+            current_shard_index: None,
             current: None,
             cache: None,
             epoch: 0,
@@ -118,7 +161,7 @@ impl DatasetReader {
 
     pub fn new_assigned(
         store: Store,
-        layout: proto::LayoutManifest,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
         epoch: u64,
         shard_seed: u64,
         context: DistributedContext,
@@ -135,47 +178,55 @@ impl DatasetReader {
 
     pub fn new_assigned_with_incomplete_policy(
         store: Store,
-        layout: proto::LayoutManifest,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
         epoch: u64,
         shard_seed: u64,
         context: DistributedContext,
         incomplete_policy: IncompleteLayoutPolicy,
     ) -> Result<Self> {
         let mut reader = Self::new_with_incomplete_policy(store, layout, incomplete_policy)?;
-        let ids = reader
-            .shards
-            .iter()
-            .map(|meta| {
-                ShardId::from_slice(&meta.shard_id).map_err(|source| Error::Manifest { source })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let assigned = assigned_shards(ids, shard_seed, context)?;
-        let by_id = reader
-            .shards
-            .drain(..)
-            .map(|meta| {
-                let id = ShardId::from_slice(&meta.shard_id).expect("validated shard ID");
-                (id, meta)
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        reader.shards = assigned
-            .into_iter()
-            .map(|id| {
-                by_id
-                    .get(&id)
-                    .expect("assigned ID came from layout")
-                    .clone()
-            })
-            .collect();
+        reader.apply_distributed_assignment(shard_seed, context)?;
         reader.epoch = epoch;
-        reader.shard_seed = shard_seed;
-        reader.distributed = Some(context);
         Ok(reader)
+    }
+
+    pub fn new_assigned_with_registry(
+        stores: StoreRegistry,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
+        epoch: u64,
+        shard_seed: u64,
+        context: DistributedContext,
+    ) -> Result<Self> {
+        let mut reader = Self::new_with_registry(stores, layout)?;
+        reader.apply_distributed_assignment(shard_seed, context)?;
+        reader.epoch = epoch;
+        Ok(reader)
+    }
+
+    fn apply_distributed_assignment(
+        &mut self,
+        shard_seed: u64,
+        context: DistributedContext,
+    ) -> Result<()> {
+        self.shard_order = assigned_shard_indices(
+            self.shard_order.iter().map(|&index| {
+                let meta = &self.layout.shards[index];
+                (
+                    index,
+                    ShardId::from_slice(&meta.shard_id).expect("validated shard ID"),
+                )
+            }),
+            shard_seed,
+            context,
+        )?;
+        self.shard_seed = shard_seed;
+        self.distributed = Some(context);
+        Ok(())
     }
 
     pub fn new_affinity_assigned(
         store: Store,
-        layout: proto::LayoutManifest,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
         epoch: u64,
         shard_seed: u64,
         affinity: NodeAffinity,
@@ -192,42 +243,46 @@ impl DatasetReader {
 
     pub fn new_affinity_assigned_with_incomplete_policy(
         store: Store,
-        layout: proto::LayoutManifest,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
         epoch: u64,
         shard_seed: u64,
         affinity: NodeAffinity,
         incomplete_policy: IncompleteLayoutPolicy,
     ) -> Result<Self> {
         let mut reader = Self::new_with_incomplete_policy(store, layout, incomplete_policy)?;
-        let ids = reader
-            .shards
-            .iter()
-            .map(|meta| {
-                ShardId::from_slice(&meta.shard_id).map_err(|source| Error::Manifest { source })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let assigned = affinity_assigned_shards(ids, shard_seed, &affinity)?;
-        let by_id = reader
-            .shards
-            .drain(..)
-            .map(|meta| {
-                let id = ShardId::from_slice(&meta.shard_id).expect("validated shard ID");
-                (id, meta)
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        reader.shards = assigned
-            .into_iter()
-            .map(|id| {
-                by_id
-                    .get(&id)
-                    .expect("assigned ID came from layout")
-                    .clone()
-            })
-            .collect();
+        reader.apply_affinity_assignment(shard_seed, affinity)?;
         reader.epoch = epoch;
-        reader.shard_seed = shard_seed;
-        reader.node_affinity = Some(affinity);
         Ok(reader)
+    }
+
+    pub fn new_affinity_assigned_with_registry(
+        stores: StoreRegistry,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
+        epoch: u64,
+        shard_seed: u64,
+        affinity: NodeAffinity,
+    ) -> Result<Self> {
+        let mut reader = Self::new_with_registry(stores, layout)?;
+        reader.apply_affinity_assignment(shard_seed, affinity)?;
+        reader.epoch = epoch;
+        Ok(reader)
+    }
+
+    fn apply_affinity_assignment(&mut self, shard_seed: u64, affinity: NodeAffinity) -> Result<()> {
+        self.shard_order = affinity_assigned_shard_indices(
+            self.shard_order.iter().map(|&index| {
+                let meta = &self.layout.shards[index];
+                (
+                    index,
+                    ShardId::from_slice(&meta.shard_id).expect("validated shard ID"),
+                )
+            }),
+            shard_seed,
+            &affinity,
+        )?;
+        self.shard_seed = shard_seed;
+        self.node_affinity = Some(affinity);
+        Ok(())
     }
 
     #[must_use]
@@ -287,18 +342,29 @@ impl DatasetReader {
     }
 
     pub async fn next_record(&mut self) -> Result<Option<EncodedRecord>> {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|reader| reader.buffered_records() != 0)
+        {
+            return self.next_record_once().await;
+        }
         let mut retries = 0_u32;
         let mut backoff = self.retry_policy.initial_backoff;
         loop {
-            let checkpoint = self.checkpoint();
+            let retry_position = self.retry_position();
             match self.next_record_once().await {
                 Ok(record) => return Ok(record),
-                Err(error) if is_retryable(&error) && retries < self.retry_policy.max_retries => {
+                Err(error)
+                    if is_retryable(&error, self.cache.is_some())
+                        && retries < self.retry_policy.max_retries =>
+                {
                     retries += 1;
                     self.metrics.retry(is_checksum_failure(&error));
                     self.invalidate_failed_cache_entry().await?;
                     tokio::time::sleep(backoff).await;
                     backoff = backoff.saturating_mul(2).min(self.retry_policy.max_backoff);
+                    let checkpoint = self.checkpoint_from_retry_position(retry_position);
                     self.restore_checkpoint(&checkpoint).await?;
                 }
                 Err(error) => return Err(error),
@@ -311,9 +377,13 @@ impl DatasetReader {
             return Ok(());
         };
         let meta = self
-            .current_meta
-            .as_ref()
-            .or_else(|| self.shards.get(self.next_shard_index));
+            .current_shard_index
+            .map(|index| &self.layout.shards[index])
+            .or_else(|| {
+                self.shard_order
+                    .get(self.next_shard_index)
+                    .map(|&index| &self.layout.shards[index])
+            });
         let Some(meta) = meta else {
             return Ok(());
         };
@@ -344,27 +414,29 @@ impl DatasetReader {
                 }
                 self.validate_finished_shard()?;
                 self.current = None;
-                self.current_meta = None;
+                self.current_shard_index = None;
                 self.records_before_current_reader = 0;
                 self.verify_current_fingerprint = true;
             }
 
-            let Some(meta) = self.shards.get(self.next_shard_index).cloned() else {
+            let Some(shard_index) = self.shard_order.get(self.next_shard_index).copied() else {
                 return Ok(None);
             };
+            let meta = &self.layout.shards[shard_index];
             let object = if let Some(prefetch) = &mut self.prefetch {
                 let object = prefetch
                     .take_next(
                         self.next_shard_index,
-                        &self.store,
+                        &self.stores,
                         self.cache.as_ref(),
-                        &self.shards,
+                        &self.layout.shards,
+                        &self.shard_order,
                     )?
                     .expect("layout has a shard at next index");
                 self.metrics.prefetched_shard();
                 object
             } else {
-                open_object(self.store.clone(), self.cache.clone(), meta.clone()).await?
+                open_object(&self.stores, self.cache.as_ref(), meta).await?
             };
             self.next_shard_index += 1;
             let reader = AsyncShardReader::with_limits_and_key(
@@ -375,7 +447,7 @@ impl DatasetReader {
             .await
             .map_err(|source| Error::Format { source })?
             .without_content_fingerprint();
-            self.current_meta = Some(meta);
+            self.current_shard_index = Some(shard_index);
             self.current = Some(reader);
         }
     }
@@ -394,14 +466,14 @@ impl DatasetReader {
             IncompleteLayoutPolicy::Reject
         };
         let mut restored = Self::resume_with_incomplete_policy_and_key(
-            self.store.clone(),
-            self.layout.clone(),
+            self.stores.clone(),
+            Arc::clone(&self.layout),
             checkpoint,
             policy,
             decryption_key,
+            cache.clone(),
         )
         .await?;
-        restored.cache = cache;
         restored.retry_policy = retry_policy;
         restored.metrics = metrics;
         if let Some(options) = prefetch_options {
@@ -416,7 +488,7 @@ impl DatasetReader {
     /// in that block are discarded.
     pub async fn resume(
         store: Store,
-        layout: proto::LayoutManifest,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
         checkpoint: &LoaderCheckpoint,
     ) -> Result<Self> {
         Self::resume_with_incomplete_policy(
@@ -430,27 +502,100 @@ impl DatasetReader {
 
     pub async fn resume_with_incomplete_policy(
         store: Store,
-        layout: proto::LayoutManifest,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
         checkpoint: &LoaderCheckpoint,
         incomplete_policy: IncompleteLayoutPolicy,
     ) -> Result<Self> {
+        let layout = layout.into();
+        shardpack_manifest::validate_layout(&layout)
+            .map_err(|source| Error::Manifest { source })?;
+        let stores = registry_for_single_store(store, &layout)?;
         Self::resume_with_incomplete_policy_and_key(
-            store,
+            stores,
             layout,
             checkpoint,
             incomplete_policy,
             None,
+            None,
+        )
+        .await
+    }
+
+    /// Restores an unencrypted loader whose layout may reference multiple
+    /// named stores.
+    pub async fn resume_with_registry(
+        stores: StoreRegistry,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
+        checkpoint: &LoaderCheckpoint,
+    ) -> Result<Self> {
+        Self::resume_with_incomplete_policy_and_key(
+            stores,
+            layout,
+            checkpoint,
+            IncompleteLayoutPolicy::Reject,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Restores an unencrypted loader and uses `cache` for the current shard.
+    /// The cached stream is consumed from byte zero to preserve a complete
+    /// local shard while decoding resumes at the recorded block boundary.
+    pub async fn resume_with_registry_and_cache(
+        stores: StoreRegistry,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
+        checkpoint: &LoaderCheckpoint,
+        cache: LocalCache,
+    ) -> Result<Self> {
+        Self::resume_with_incomplete_policy_and_key(
+            stores,
+            layout,
+            checkpoint,
+            IncompleteLayoutPolicy::Reject,
+            None,
+            Some(cache),
         )
         .await
     }
 
     pub async fn resume_encrypted(
         store: Store,
-        layout: proto::LayoutManifest,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
         checkpoint: &LoaderCheckpoint,
         key_id: &str,
         key: shardpack_format::EncryptionKey,
     ) -> Result<Self> {
+        let layout = layout.into();
+        if layout
+            .encryption
+            .as_ref()
+            .is_none_or(|encryption| encryption.key_id != key_id)
+        {
+            return Err(Error::DecryptionKeyMismatch);
+        }
+        shardpack_manifest::validate_layout(&layout)
+            .map_err(|source| Error::Manifest { source })?;
+        let stores = registry_for_single_store(store, &layout)?;
+        Self::resume_with_incomplete_policy_and_key(
+            stores,
+            layout,
+            checkpoint,
+            IncompleteLayoutPolicy::Reject,
+            Some(key),
+            None,
+        )
+        .await
+    }
+
+    pub async fn resume_encrypted_with_registry(
+        stores: StoreRegistry,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
+        checkpoint: &LoaderCheckpoint,
+        key_id: &str,
+        key: shardpack_format::EncryptionKey,
+    ) -> Result<Self> {
+        let layout = layout.into();
         if layout
             .encryption
             .as_ref()
@@ -459,43 +604,58 @@ impl DatasetReader {
             return Err(Error::DecryptionKeyMismatch);
         }
         Self::resume_with_incomplete_policy_and_key(
-            store,
+            stores,
             layout,
             checkpoint,
             IncompleteLayoutPolicy::Reject,
             Some(key),
+            None,
+        )
+        .await
+    }
+
+    pub async fn resume_encrypted_with_registry_and_cache(
+        stores: StoreRegistry,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
+        checkpoint: &LoaderCheckpoint,
+        key_id: &str,
+        key: shardpack_format::EncryptionKey,
+        cache: LocalCache,
+    ) -> Result<Self> {
+        let layout = layout.into();
+        if layout
+            .encryption
+            .as_ref()
+            .is_none_or(|encryption| encryption.key_id != key_id)
+        {
+            return Err(Error::DecryptionKeyMismatch);
+        }
+        Self::resume_with_incomplete_policy_and_key(
+            stores,
+            layout,
+            checkpoint,
+            IncompleteLayoutPolicy::Reject,
+            Some(key),
+            Some(cache),
         )
         .await
     }
 
     async fn resume_with_incomplete_policy_and_key(
-        store: Store,
-        layout: proto::LayoutManifest,
+        stores: StoreRegistry,
+        layout: impl Into<Arc<proto::LayoutManifest>>,
         checkpoint: &LoaderCheckpoint,
         incomplete_policy: IncompleteLayoutPolicy,
         decryption_key: Option<shardpack_format::EncryptionKey>,
+        cache: Option<LocalCache>,
     ) -> Result<Self> {
-        let mut result = if let Some(affinity) = checkpoint.node_affinity.clone() {
-            Self::new_affinity_assigned_with_incomplete_policy(
-                store,
-                layout,
-                checkpoint.epoch,
-                checkpoint.shard_seed,
-                affinity,
-                incomplete_policy,
-            )?
+        let mut result =
+            Self::new_with_registry_and_incomplete_policy(stores, layout, incomplete_policy)?;
+        if let Some(affinity) = checkpoint.node_affinity.clone() {
+            result.apply_affinity_assignment(checkpoint.shard_seed, affinity)?;
         } else if let Some(context) = checkpoint.distributed {
-            Self::new_assigned_with_incomplete_policy(
-                store,
-                layout,
-                checkpoint.epoch,
-                checkpoint.shard_seed,
-                context,
-                incomplete_policy,
-            )?
-        } else {
-            Self::new_with_incomplete_policy(store, layout, incomplete_policy)?
-        };
+            result.apply_distributed_assignment(checkpoint.shard_seed, context)?;
+        }
         if result.layout.snapshot_id.as_slice() != checkpoint.snapshot_id {
             return Err(Error::InvalidCheckpoint {
                 reason: "snapshot ID does not match layout",
@@ -509,6 +669,7 @@ impl DatasetReader {
         result.epoch = checkpoint.epoch;
         result.shard_seed = checkpoint.shard_seed;
         result.decryption_key = decryption_key.clone();
+        result.cache = cache;
         result.next_shard_index = checkpoint.next_shard_index;
 
         let Some(current_id) = checkpoint.current_shard_id else {
@@ -521,7 +682,7 @@ impl DatasetReader {
                     reason: "between-shard checkpoint contains block coordinates",
                 });
             }
-            if result.next_shard_index > result.shards.len() {
+            if result.next_shard_index > result.shard_order.len() {
                 return Err(Error::InvalidCheckpoint {
                     reason: "next shard index is out of bounds",
                 });
@@ -536,32 +697,48 @@ impl DatasetReader {
                 .ok_or(Error::InvalidCheckpoint {
                     reason: "current shard requires a nonzero next shard index",
                 })?;
-        let meta = result
-            .shards
-            .get(current_index)
-            .cloned()
-            .ok_or(Error::InvalidCheckpoint {
-                reason: "current shard index is out of bounds",
-            })?;
+        let shard_index =
+            result
+                .shard_order
+                .get(current_index)
+                .copied()
+                .ok_or(Error::InvalidCheckpoint {
+                    reason: "current shard index is out of bounds",
+                })?;
+        let meta = &result.layout.shards[shard_index];
         if meta.shard_id.as_slice() != current_id {
             return Err(Error::InvalidCheckpoint {
                 reason: "current shard ID does not match layout",
             });
         }
         if checkpoint.block_start_offset < shardpack_format::SHARD_HEADER_SIZE as u64
+            || checkpoint.block_start_offset >= meta.byte_size
             || checkpoint.records_yielded_in_current_shard < u64::from(checkpoint.record_index)
         {
             return Err(Error::InvalidCheckpoint {
                 reason: "invalid block offset or record count",
             });
         }
-        let object = result
-            .store
-            .open_reader_from(&meta.object_uri, checkpoint.block_start_offset)
-            .await
-            .map_err(|source| Error::Storage { source })?;
+        let (object, verify_full_identity) = if result.cache.is_some() {
+            let object = open_object(&result.stores, result.cache.as_ref(), meta).await?;
+            let mut object = Blake3Reader::new(object);
+            discard_exact(&mut object, checkpoint.block_start_offset).await?;
+            (object, true)
+        } else {
+            let object = result
+                .stores
+                .get(&shardpack_manifest::object_location(meta).store_id)
+                .map_err(|source| Error::Storage { source })?
+                .open_reader_from(
+                    &shardpack_manifest::object_location(meta).object_key,
+                    checkpoint.block_start_offset,
+                )
+                .await
+                .map_err(|source| Error::Storage { source })?;
+            (Blake3Reader::new(object), false)
+        };
         let mut reader = AsyncShardReader::from_block_boundary_with_key(
-            Blake3Reader::new(object),
+            object,
             ReaderLimits::default(),
             checkpoint.block_index,
             checkpoint.block_start_offset,
@@ -574,8 +751,8 @@ impl DatasetReader {
             .map_err(|source| Error::Format { source })?;
         result.records_before_current_reader =
             checkpoint.records_yielded_in_current_shard - u64::from(checkpoint.record_index);
-        result.verify_current_fingerprint = false;
-        result.current_meta = Some(meta);
+        result.verify_current_fingerprint = verify_full_identity;
+        result.current_shard_index = Some(shard_index);
         result.current = Some(reader);
         Ok(result)
     }
@@ -584,7 +761,8 @@ impl DatasetReader {
     pub fn position(&self) -> ReaderPosition {
         ReaderPosition {
             next_shard_index: self.next_shard_index,
-            current_shard_id: self.current_meta.as_ref().map(|meta| {
+            current_shard_id: self.current_shard_index.map(|index| {
+                let meta = &self.layout.shards[index];
                 meta.shard_id
                     .as_slice()
                     .try_into()
@@ -598,10 +776,31 @@ impl DatasetReader {
 
     #[must_use]
     pub fn checkpoint(&self) -> LoaderCheckpoint {
-        let reader_position = self
+        self.checkpoint_from_retry_position(self.retry_position())
+    }
+
+    fn retry_position(&self) -> RetryPosition {
+        let reader = self
             .current
             .as_ref()
             .map_or(default_reader_position(), AsyncShardReader::position);
+        RetryPosition {
+            next_shard_index: self.next_shard_index,
+            current_shard_id: self.current_shard_index.map(|index| {
+                self.layout.shards[index]
+                    .shard_id
+                    .as_slice()
+                    .try_into()
+                    .expect("validated shard ID")
+            }),
+            records_yielded_in_current_shard: self.current.as_ref().map_or(0, |reader| {
+                self.records_before_current_reader + reader.records_yielded()
+            }),
+            reader,
+        }
+    }
+
+    fn checkpoint_from_retry_position(&self, position: RetryPosition) -> LoaderCheckpoint {
         LoaderCheckpoint {
             snapshot_id: self
                 .layout
@@ -617,17 +816,12 @@ impl DatasetReader {
                 .expect("validated layout ID"),
             epoch: self.epoch,
             shard_seed: self.shard_seed,
-            next_shard_index: self.next_shard_index,
-            current_shard_id: self.current_meta.as_ref().map(|meta| {
-                meta.shard_id
-                    .as_slice()
-                    .try_into()
-                    .expect("validated shard ID")
-            }),
-            records_yielded_in_current_shard: self.position().records_yielded_in_current_shard,
-            block_index: reader_position.block_index,
-            block_start_offset: reader_position.block_start_offset,
-            record_index: reader_position.record_index,
+            next_shard_index: position.next_shard_index,
+            current_shard_id: position.current_shard_id,
+            records_yielded_in_current_shard: position.records_yielded_in_current_shard,
+            block_index: position.reader.block_index,
+            block_start_offset: position.reader.block_start_offset,
+            record_index: position.reader.record_index,
             distributed: self.distributed,
             node_affinity: self.node_affinity.clone(),
         }
@@ -635,7 +829,7 @@ impl DatasetReader {
 
     fn validate_finished_shard(&self) -> Result<()> {
         let reader = self.current.as_ref().expect("reader exists");
-        let meta = self.current_meta.as_ref().expect("metadata exists");
+        let meta = &self.layout.shards[self.current_shard_index.expect("metadata exists")];
         if self.records_before_current_reader + reader.records_yielded() != meta.record_count {
             return Err(mismatch(meta, "record count differs"));
         }
@@ -648,29 +842,67 @@ impl DatasetReader {
         {
             return Err(mismatch(meta, "exact shard identity differs"));
         }
-        self.metrics.shard_verified(meta.byte_size);
+        self.metrics
+            .shard_completed(meta.byte_size, self.verify_current_fingerprint);
         Ok(())
     }
 }
 
+async fn discard_exact<R: AsyncRead + Unpin>(reader: &mut R, mut bytes: u64) -> Result<()> {
+    // Keep the async state machine small; embedding a large array here is
+    // multiplied through callers that contain this future.
+    let mut buffer = vec![0_u8; 64 * 1024];
+    while bytes != 0 {
+        let chunk = usize::try_from(bytes.min(buffer.len() as u64)).expect("bounded by buffer");
+        reader
+            .read_exact(&mut buffer[..chunk])
+            .await
+            .map_err(|source| Error::Format {
+                source: shardpack_format::Error::Io { source },
+            })?;
+        bytes -= chunk as u64;
+    }
+    Ok(())
+}
+
 async fn open_object(
-    store: Store,
-    cache: Option<LocalCache>,
-    meta: proto::ShardMeta,
+    stores: &StoreRegistry,
+    cache: Option<&LocalCache>,
+    meta: &proto::ShardMeta,
 ) -> Result<AsyncObjectReader> {
+    let location = shardpack_manifest::object_location(meta);
+    let store = stores
+        .get(&location.store_id)
+        .map_err(|source| Error::Storage { source })?;
     if let Some(cache) = cache {
         let id =
             ShardId::from_slice(&meta.shard_id).map_err(|source| Error::Manifest { source })?;
         cache
-            .open(&store, &meta.object_uri, id, meta.byte_size)
+            .open(store, &location.object_key, id, meta.byte_size)
             .await
             .map_err(|source| Error::Cache { source })
     } else {
         store
-            .open_reader(&meta.object_uri)
+            .open_reader(&location.object_key)
             .await
             .map_err(|source| Error::Storage { source })
     }
+}
+
+fn registry_for_single_store(
+    store: Store,
+    layout: &proto::LayoutManifest,
+) -> Result<StoreRegistry> {
+    let mut stores = StoreRegistry::new();
+    for shard in &layout.shards {
+        let store_id = &shardpack_manifest::object_location(shard).store_id;
+        if !stores.contains(store_id) {
+            stores
+                .insert(store_id, store.clone())
+                .map_err(|source| Error::Storage { source })?;
+        }
+    }
+    Ok(stores)
 }
 
 const fn default_reader_position() -> AsyncReaderPosition {
@@ -689,7 +921,7 @@ fn mismatch(meta: &proto::ShardMeta, reason: &'static str) -> Error {
     }
 }
 
-fn is_retryable(error: &Error) -> bool {
+fn is_retryable(error: &Error, cache_enabled: bool) -> bool {
     match error {
         Error::Format { source } => matches!(
             source,
@@ -709,6 +941,9 @@ fn is_retryable(error: &Error) -> bool {
             source,
             shardpack_cache::Error::Storage { .. } | shardpack_cache::Error::Io { .. }
         ),
+        Error::ShardMismatch { reason, .. } => {
+            cache_enabled && *reason == "exact shard identity differs"
+        }
         _ => false,
     }
 }
@@ -725,6 +960,8 @@ fn is_checksum_failure(error: &Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use bytes::Bytes;
     use futures_util::stream;
     use shardpack_format::{BlockCodec, ContentFingerprint, ShardWriter, WriterOptions};
@@ -774,7 +1011,10 @@ mod tests {
             content_fingerprint: Some(proto_fingerprint(summary.content_fingerprint)),
             shards: vec![proto::ShardMeta {
                 shard_id: summary.shard_id.to_vec(),
-                object_uri: object_uri.into(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: object_uri.into(),
+                }),
                 byte_size: summary.byte_size,
                 record_count: summary.record_count,
                 block_count: summary.block_count,
@@ -803,9 +1043,11 @@ mod tests {
         )
         .unwrap();
         let metrics = RuntimeMetrics::default();
-        let mut reader = DatasetReader::new(store, layout)
+        let layout = Arc::new(layout);
+        let mut reader = DatasetReader::new(store, layout.clone())
             .unwrap()
             .with_metrics(metrics.clone());
+        assert!(Arc::ptr_eq(&reader.layout, &layout));
         assert_eq!(reader.next_record().await.unwrap().unwrap().payload, "one");
         assert_eq!(reader.next_record().await.unwrap().unwrap().payload, "two");
         assert!(reader.next_record().await.unwrap().is_none());
@@ -813,8 +1055,94 @@ mod tests {
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.records_read, 2);
         assert_eq!(snapshot.encoded_bytes_read, 6);
+        assert_eq!(snapshot.shards_completed, 1);
+        assert_eq!(snapshot.shard_bytes_completed, summary.byte_size);
         assert_eq!(snapshot.shards_verified, 1);
         assert_eq!(snapshot.shard_bytes_verified, summary.byte_size);
+    }
+
+    #[tokio::test]
+    async fn streams_one_layout_across_multiple_stores() {
+        let first_root = tempfile::tempdir().unwrap();
+        let second_root = tempfile::tempdir().unwrap();
+        let first = shardpack_storage::Store::filesystem(first_root.path()).unwrap();
+        let second = shardpack_storage::Store::filesystem(second_root.path()).unwrap();
+        let mut shards = Vec::new();
+        let mut aggregate = ContentFingerprint::default();
+        let mut total_bytes = 0;
+
+        for (store_id, store, value) in [("hot", &first, 1_u8), ("archive", &second, 2_u8)] {
+            let mut writer = ShardWriter::new(Vec::new(), WriterOptions::default()).unwrap();
+            writer.add_record([value; 16], 0, &[value]).unwrap();
+            let (bytes, summary) = writer.finish().unwrap();
+            let object_key = format!("shards/{value}.spk");
+            store
+                .write_immutable(
+                    &object_key,
+                    Box::pin(stream::once(async move { Ok(Bytes::from(bytes)) })),
+                )
+                .await
+                .unwrap();
+            aggregate.merge(&summary.content_fingerprint);
+            total_bytes += summary.byte_size;
+            shards.push(proto::ShardMeta {
+                shard_id: summary.shard_id.to_vec(),
+                location: Some(proto::ObjectLocation {
+                    store_id: store_id.into(),
+                    object_key,
+                }),
+                byte_size: summary.byte_size,
+                record_count: summary.record_count,
+                block_count: summary.block_count,
+                content_fingerprint: Some(proto_fingerprint(summary.content_fingerprint)),
+            });
+        }
+
+        let mut layout = proto::LayoutManifest {
+            snapshot_id: vec![7; 32],
+            builder_version: "multi-store-test".into(),
+            recipe: Some(proto::LayoutRecipe {
+                target_shard_bytes: 1024,
+                target_block_bytes: 1024,
+                block_codec: "none".into(),
+                shuffle_seed: None,
+            }),
+            portability: proto::Portability::SelfContained as i32,
+            durability: proto::Durability::Durable as i32,
+            total_records: aggregate.record_count,
+            total_bytes,
+            content_fingerprint: Some(proto_fingerprint(aggregate)),
+            shards,
+            state: proto::LayoutState::Complete as i32,
+            ..Default::default()
+        };
+        layout.layout_id = layout_id(&layout).0.to_vec();
+
+        let mut stores = shardpack_storage::StoreRegistry::new();
+        stores.insert("hot", first).unwrap();
+        stores.insert("archive", second).unwrap();
+        let mut reader = DatasetReader::new_with_registry(stores, layout).unwrap();
+        assert_eq!(
+            reader
+                .next_record()
+                .await
+                .unwrap()
+                .unwrap()
+                .payload
+                .as_ref(),
+            [1]
+        );
+        assert_eq!(
+            reader
+                .next_record()
+                .await
+                .unwrap()
+                .unwrap()
+                .payload
+                .as_ref(),
+            [2]
+        );
+        assert!(reader.next_record().await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -851,7 +1179,10 @@ mod tests {
             content_fingerprint: Some(proto_fingerprint(summary.content_fingerprint)),
             shards: vec![proto::ShardMeta {
                 shard_id: summary.shard_id.to_vec(),
-                object_uri: object_uri.into(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: object_uri.into(),
+                }),
                 byte_size: summary.byte_size,
                 record_count: 2,
                 block_count: 1,
@@ -890,9 +1221,9 @@ mod tests {
             "private"
         );
         let checkpoint = reader.checkpoint();
-        let mut resumed = DatasetReader::resume_encrypted(
-            reader.store.clone(),
-            reader.layout.clone(),
+        let mut resumed = DatasetReader::resume_encrypted_with_registry(
+            reader.stores.clone(),
+            (*reader.layout).clone(),
             &checkpoint,
             "kms://training/key-7",
             shardpack_format::EncryptionKey::new([0x71; 32]),
@@ -931,7 +1262,10 @@ mod tests {
             total_bytes += summary.byte_size;
             shards.push(proto::ShardMeta {
                 shard_id: summary.shard_id.to_vec(),
-                object_uri,
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: object_uri,
+                }),
                 byte_size: summary.byte_size,
                 record_count: summary.record_count,
                 block_count: summary.block_count,
@@ -1062,7 +1396,7 @@ mod tests {
         let mut writer = ShardWriter::new(
             Vec::new(),
             WriterOptions {
-                target_block_bytes: 8,
+                target_block_bytes: 54,
                 codec: BlockCodec::None,
                 zstd_level: 3,
             },
@@ -1086,7 +1420,7 @@ mod tests {
             builder_version: "test".into(),
             recipe: Some(proto::LayoutRecipe {
                 target_shard_bytes: 1024,
-                target_block_bytes: 8,
+                target_block_bytes: 54,
                 block_codec: "none".into(),
                 shuffle_seed: None,
             }),
@@ -1097,7 +1431,10 @@ mod tests {
             content_fingerprint: Some(proto_fingerprint(summary.content_fingerprint)),
             shards: vec![proto::ShardMeta {
                 shard_id: summary.shard_id.to_vec(),
-                object_uri: object_uri.into(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: object_uri.into(),
+                }),
                 byte_size: summary.byte_size,
                 record_count: summary.record_count,
                 block_count: summary.block_count,
@@ -1119,6 +1456,17 @@ mod tests {
         assert_eq!(checkpoint.block_index, 0);
         assert_eq!(checkpoint.record_index, 1);
         assert_eq!(checkpoint.epoch, 4);
+        assert_eq!(
+            first.next_record().await.unwrap().unwrap().sample_id,
+            [2; 16]
+        );
+        assert_eq!(
+            first.next_record().await.unwrap().unwrap().sample_id,
+            [3; 16]
+        );
+        let later_checkpoint = first.checkpoint();
+        assert_eq!(later_checkpoint.block_index, 1);
+        assert!(later_checkpoint.block_start_offset > checkpoint.block_start_offset);
 
         let mut invalid_cases = Vec::new();
         let mut wrong_snapshot = checkpoint.clone();
@@ -1150,14 +1498,97 @@ mod tests {
             Err(Error::InvalidCheckpoint { .. })
         ));
 
-        let mut resumed = DatasetReader::resume(store, layout, &checkpoint)
+        let resumed_metrics = RuntimeMetrics::default();
+        let mut resumed = DatasetReader::resume(store.clone(), layout.clone(), &checkpoint)
             .await
-            .unwrap();
+            .unwrap()
+            .with_metrics(resumed_metrics.clone());
         let mut remaining = Vec::new();
         while let Some(record) = resumed.next_record().await.unwrap() {
             remaining.push(record.sample_id[0]);
         }
         assert_eq!(remaining, vec![2, 3, 4, 5]);
+        let snapshot = resumed_metrics.snapshot();
+        assert_eq!(snapshot.shards_completed, 1);
+        assert_eq!(snapshot.shards_verified, 0);
+
+        let mut wrong_identity_layout = layout.clone();
+        wrong_identity_layout.shards[0].shard_id[0] ^= 0x80;
+        wrong_identity_layout.layout_id = layout_id(&wrong_identity_layout).0.to_vec();
+        let metrics = RuntimeMetrics::default();
+        let mut wrong_identity = DatasetReader::new(store.clone(), wrong_identity_layout)
+            .unwrap()
+            .with_metrics(metrics.clone());
+        for _ in 0..summary.record_count {
+            assert!(wrong_identity.next_record().await.unwrap().is_some());
+        }
+        assert!(matches!(
+            wrong_identity.next_record().await,
+            Err(Error::ShardMismatch {
+                reason: "exact shard identity differs",
+                ..
+            })
+        ));
+        assert_eq!(metrics.snapshot().retries, 0);
+
+        let cache_root = tempfile::tempdir().unwrap();
+        let cache = shardpack_cache::LocalCache::new(cache_root.path());
+        let shard_id = shardpack_manifest::ShardId(summary.shard_id);
+        let mut stores = shardpack_storage::StoreRegistry::new();
+        stores.insert("default", store.clone()).unwrap();
+        let mut cached = DatasetReader::resume_with_registry_and_cache(
+            stores.clone(),
+            layout.clone(),
+            &checkpoint,
+            cache.clone(),
+        )
+        .await
+        .unwrap();
+        let mut remaining = Vec::new();
+        while let Some(record) = cached.next_record().await.unwrap() {
+            remaining.push(record.sample_id[0]);
+        }
+        assert_eq!(remaining, vec![2, 3, 4, 5]);
+        assert!(cache.path_for(shard_id).is_file());
+        let metrics = cache.metrics().snapshot();
+        assert_eq!(metrics.misses, 1);
+        assert_eq!(metrics.downloaded_bytes, summary.byte_size);
+
+        let mut corrupt = tokio::fs::read(cache.path_for(shard_id)).await.unwrap();
+        corrupt[shardpack_format::SHARD_HEADER_SIZE + shardpack_format::BLOCK_HEADER_SIZE] ^= 0x80;
+        tokio::fs::write(cache.path_for(shard_id), corrupt)
+            .await
+            .unwrap();
+        let mut cached = DatasetReader::resume_with_registry_and_cache(
+            stores.clone(),
+            layout.clone(),
+            &later_checkpoint,
+            cache.clone(),
+        )
+        .await
+        .unwrap();
+        let mut remaining = Vec::new();
+        while let Some(record) = cached.next_record().await.unwrap() {
+            remaining.push(record.sample_id[0]);
+        }
+        assert_eq!(remaining, vec![4, 5]);
+        assert_eq!(cache.metrics().snapshot().corrupt_entries, 1);
+
+        store.delete(object_uri).await.unwrap();
+        let mut cached = DatasetReader::resume_with_registry_and_cache(
+            stores,
+            layout,
+            &checkpoint,
+            cache.clone(),
+        )
+        .await
+        .unwrap();
+        let mut remaining = Vec::new();
+        while let Some(record) = cached.next_record().await.unwrap() {
+            remaining.push(record.sample_id[0]);
+        }
+        assert_eq!(remaining, vec![2, 3, 4, 5]);
+        assert_eq!(cache.metrics().snapshot().hits, 2);
     }
 
     #[tokio::test]
@@ -1193,7 +1624,10 @@ mod tests {
             content_fingerprint: Some(proto_fingerprint(summary.content_fingerprint)),
             shards: vec![proto::ShardMeta {
                 shard_id: summary.shard_id.to_vec(),
-                object_uri: object_uri.into(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: object_uri.into(),
+                }),
                 byte_size: summary.byte_size,
                 record_count: 1,
                 block_count: 1,
@@ -1276,7 +1710,10 @@ mod tests {
             content_fingerprint: Some(proto_fingerprint(summary.content_fingerprint)),
             shards: vec![proto::ShardMeta {
                 shard_id: summary.shard_id.to_vec(),
-                object_uri: object_uri.into(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: object_uri.into(),
+                }),
                 byte_size: summary.byte_size,
                 record_count: 1,
                 block_count: 1,

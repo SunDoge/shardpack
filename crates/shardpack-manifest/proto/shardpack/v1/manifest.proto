@@ -45,8 +45,9 @@ message SnapshotManifest {
   optional MaterializationStats materialization_stats = 13;
 }
 message ContentFingerprint { uint64 record_count = 1; bytes accumulator_a = 2; bytes accumulator_b = 3; }
+message ObjectLocation { string store_id = 1; string object_key = 2; }
 message ShardMeta {
-  bytes shard_id = 1; string object_uri = 2; uint64 byte_size = 3; uint64 record_count = 4;
+  bytes shard_id = 1; ObjectLocation location = 2; uint64 byte_size = 3; uint64 record_count = 4;
   uint32 block_count = 5; ContentFingerprint content_fingerprint = 6;
 }
 message LayoutRecipe {

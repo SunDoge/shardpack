@@ -18,12 +18,18 @@ async fn s3_stream_range_list_conditional_create_and_delete() {
         root: std::env::var("SHARDPACK_TEST_S3_ROOT").ok(),
         endpoint: std::env::var("SHARDPACK_TEST_S3_ENDPOINT").ok(),
         region: std::env::var("AWS_REGION").ok(),
+        profile: None,
         access_key_id: std::env::var("AWS_ACCESS_KEY_ID").ok(),
         secret_access_key: std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
         session_token: std::env::var("AWS_SESSION_TOKEN").ok(),
         ..S3Options::default()
     };
     let store = Store::s3(&options).unwrap();
+    // This prefix is reserved for this ignored integration test. Cleaning it
+    // first also recovers objects left by a previously interrupted test run.
+    for stale in store.list_keys("integration/").await.unwrap() {
+        store.delete(&stale).await.unwrap();
+    }
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -80,8 +86,8 @@ async fn s3_stream_range_list_conditional_create_and_delete() {
             Box::pin(stream::once(async { Ok(Bytes::from_static(b"replace")) })),
         )
         .await;
-    assert!(matches!(duplicate, Err(Error::AlreadyExists { .. })));
-    assert_eq!(store.read_all(&key).await.unwrap().len(), expected_bytes);
+    let duplicate_rejected = matches!(duplicate, Err(Error::AlreadyExists { .. }));
+    let original_preserved = store.read_all(&key).await.unwrap().len() == expected_bytes;
 
     let concurrent_key = format!("{prefix}/concurrent-create.bin");
     let barrier = Arc::new(Barrier::new(8));
@@ -111,9 +117,7 @@ async fn s3_stream_range_list_conditional_create_and_delete() {
             Err(error) => panic!("unexpected concurrent-create error: {error}"),
         }
     }
-    assert_eq!(created, 1);
-    assert_eq!(rejected, 7);
-    assert_eq!(store.read_all(&concurrent_key).await.unwrap().len(), 32);
+    let concurrent_object_valid = store.read_all(&concurrent_key).await.unwrap().len() == 32;
 
     store.delete(&key).await.unwrap();
     store.delete(&concurrent_key).await.unwrap();
@@ -121,4 +125,11 @@ async fn s3_stream_range_list_conditional_create_and_delete() {
         store.read_all(&key).await,
         Err(Error::NotFound { .. })
     ));
+    assert!(
+        duplicate_rejected && original_preserved,
+        "backend did not enforce immutable conditional create: result={duplicate:?}, original_preserved={original_preserved}"
+    );
+    assert_eq!(created, 1, "backend allowed multiple concurrent creators");
+    assert_eq!(rejected, 7, "backend did not reject concurrent creators");
+    assert!(concurrent_object_valid);
 }

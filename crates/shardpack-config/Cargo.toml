@@ -1,0 +1,20 @@
+[package]
+name = "shardpack-config"
+description = "Typed layered configuration and storage registry construction for ShardPack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+config.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+shardpack-storage = { path = "../shardpack-storage" }
+snafu.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[lints]
+workspace = true

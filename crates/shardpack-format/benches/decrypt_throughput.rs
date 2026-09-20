@@ -4,7 +4,9 @@ use aes_gcm::{
     Aes256Gcm,
     aead::{AeadInOut, KeyInit, Nonce},
 };
-use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce as AwsNonce, UnboundKey};
+use aws_lc_rs::aead::{
+    AES_256_GCM, Aad, CHACHA20_POLY1305, LessSafeKey, Nonce as AwsNonce, UnboundKey,
+};
 use chacha20poly1305::ChaCha20Poly1305;
 
 const BLOCK_BYTES: usize = 16 * 1024 * 1024;
@@ -117,6 +119,56 @@ fn main() {
     report("AES-256-GCM", aes_elapsed);
     report("ChaCha20-Poly1305", chacha_elapsed);
     report("AWS-LC AES-256-GCM", aws_elapsed);
+
+    let aws_chacha = LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &[0x66; 32]).unwrap());
+    let mut aws_chacha_blocks = vec![vec![0x5a; BLOCK_BYTES]; BLOCKS];
+    let mut aws_chacha_tags = aws_chacha_blocks
+        .iter_mut()
+        .enumerate()
+        .map(|(index, block)| {
+            aws_chacha
+                .seal_in_place_separate_tag(
+                    AwsNonce::assume_unique_for_key(bench_nonce(0, index)),
+                    Aad::from(aad),
+                    block,
+                )
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let mut aws_chacha_elapsed = std::time::Duration::ZERO;
+    for round in 0..ROUNDS {
+        let start = Instant::now();
+        for (index, (block, tag)) in aws_chacha_blocks
+            .iter_mut()
+            .zip(&aws_chacha_tags)
+            .enumerate()
+        {
+            aws_chacha
+                .open_in_place_separate_tag(
+                    AwsNonce::assume_unique_for_key(bench_nonce(round, index)),
+                    Aad::from(aad),
+                    tag.as_ref(),
+                    block,
+                )
+                .unwrap();
+            black_box(&*block);
+        }
+        aws_chacha_elapsed += start.elapsed();
+        for (index, (block, tag)) in aws_chacha_blocks
+            .iter_mut()
+            .zip(&mut aws_chacha_tags)
+            .enumerate()
+        {
+            *tag = aws_chacha
+                .seal_in_place_separate_tag(
+                    AwsNonce::assume_unique_for_key(bench_nonce(round + 1, index)),
+                    Aad::from(aad),
+                    block,
+                )
+                .unwrap();
+        }
+    }
+    report("AWS-LC ChaCha20-Poly1305", aws_chacha_elapsed);
 }
 
 fn bench_nonce(round: usize, index: usize) -> [u8; 12] {

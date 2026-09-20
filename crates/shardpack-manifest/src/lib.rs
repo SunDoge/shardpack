@@ -8,6 +8,16 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/shardpack.v1.rs"));
 }
 
+/// Returns a shard's physical location after its containing layout has been
+/// validated.
+#[must_use]
+pub fn object_location(shard: &proto::ShardMeta) -> &proto::ObjectLocation {
+    shard
+        .location
+        .as_ref()
+        .expect("validated shard location must be present")
+}
+
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("protobuf decode failed: {source}"))]
@@ -340,7 +350,7 @@ pub fn validate_layout(manifest: &proto::LayoutManifest) -> Result<()> {
     let mut accumulated_a = [0_u8; 32];
     let mut accumulated_b = [0_u8; 32];
     let mut shard_ids = HashSet::new();
-    let mut object_uris = HashSet::new();
+    let mut object_locations = HashSet::new();
     for shard in &manifest.shards {
         validate_hash("shard_id", &shard.shard_id)?;
         if !shard_ids.insert(shard.shard_id.as_slice()) {
@@ -349,10 +359,26 @@ pub fn validate_layout(manifest: &proto::LayoutManifest) -> Result<()> {
                 reason: "duplicate shard ID",
             });
         }
-        if shard.object_uri.is_empty() || !object_uris.insert(shard.object_uri.as_str()) {
+        let location = shard.location.as_ref().ok_or(Error::Invalid {
+            field: "shard.location",
+            reason: "must be set",
+        })?;
+        if location.store_id.is_empty()
+            || !location
+                .store_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || location.object_key.is_empty()
+            || location.object_key.starts_with('/')
+            || location
+                .object_key
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            || !object_locations.insert((location.store_id.as_str(), location.object_key.as_str()))
+        {
             return Err(Error::Invalid {
                 field: "shards",
-                reason: "object URIs must be non-empty and unique",
+                reason: "object locations must be normalized, non-empty and unique",
             });
         }
         if shard.byte_size == 0 || shard.block_count == 0 || shard.record_count == 0 {
@@ -531,7 +557,10 @@ mod tests {
             content_fingerprint: Some(fingerprint(2, 2)),
             shards: vec![proto::ShardMeta {
                 shard_id: vec![3; 32],
-                object_uri: "objects/03.spk".into(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: "objects/03.spk".into(),
+                }),
                 byte_size: 100,
                 record_count: 2,
                 block_count: 1,

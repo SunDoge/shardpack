@@ -55,6 +55,18 @@ impl BlockHeader {
         let encryption = EncryptionAlgorithm::try_from(bytes[37])?;
         let key_salt: [u8; 16] = bytes[38..54].try_into().expect("fixed slice");
         let nonce_counter = u16::from_le_bytes(bytes[54..56].try_into().expect("fixed slice"));
+        let flags = u16::from_le_bytes(bytes[10..12].try_into().expect("fixed slice"));
+        let record_count = u32::from_le_bytes(bytes[12..16].try_into().expect("fixed slice"));
+        if record_count == 0 {
+            return Err(Error::InvalidBlockHeader {
+                reason: "block contains no records",
+            });
+        }
+        if flags & !1 != 0 || (flags == 1 && record_count != 1) {
+            return Err(Error::InvalidBlockHeader {
+                reason: "invalid jumbo block flags",
+            });
+        }
         if (version == 1 && encryption != EncryptionAlgorithm::None)
             || (version == 2 && encryption != EncryptionAlgorithm::Aes256Gcm)
             || (encryption == EncryptionAlgorithm::None
@@ -66,8 +78,8 @@ impl BlockHeader {
         }
         Ok(Self {
             version,
-            flags: u16::from_le_bytes(bytes[10..12].try_into().expect("fixed slice")),
-            record_count: u32::from_le_bytes(bytes[12..16].try_into().expect("fixed slice")),
+            flags,
+            record_count,
             directory_bytes: u32::from_le_bytes(bytes[16..20].try_into().expect("fixed slice")),
             stored_payload_bytes: u64::from_le_bytes(
                 bytes[20..28].try_into().expect("fixed slice"),
@@ -79,5 +91,50 @@ impl BlockHeader {
             nonce_counter,
             payload_crc32c: u32::from_le_bytes(bytes[60..].try_into().expect("fixed slice")),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{BlockCodec, EncryptionAlgorithm, Error};
+
+    use super::BlockHeader;
+
+    fn header() -> BlockHeader {
+        BlockHeader {
+            version: 1,
+            flags: 0,
+            record_count: 1,
+            directory_bytes: 24,
+            stored_payload_bytes: 1,
+            raw_payload_bytes: 1,
+            codec: BlockCodec::None,
+            encryption: EncryptionAlgorithm::None,
+            key_salt: [0; 16],
+            nonce_counter: 0,
+            payload_crc32c: 0,
+        }
+    }
+
+    #[test]
+    fn rejects_empty_blocks_and_invalid_jumbo_flags() {
+        let mut empty = header();
+        empty.record_count = 0;
+        assert!(matches!(
+            BlockHeader::decode(&empty.encode()),
+            Err(Error::InvalidBlockHeader {
+                reason: "block contains no records"
+            })
+        ));
+
+        let mut invalid_jumbo = header();
+        invalid_jumbo.flags = 1;
+        invalid_jumbo.record_count = 2;
+        assert!(matches!(
+            BlockHeader::decode(&invalid_jumbo.encode()),
+            Err(Error::InvalidBlockHeader {
+                reason: "invalid jumbo block flags"
+            })
+        ));
     }
 }

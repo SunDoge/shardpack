@@ -8,6 +8,8 @@ use shardpack_storage::{Error as StorageError, Store};
 use snafu::Snafu;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+const MAX_CONTROL_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("storage operation failed: {source}"))]
@@ -405,7 +407,7 @@ impl Catalog {
     async fn read_message<M: Message + Default>(&self, key: &str) -> Result<M> {
         let bytes = self
             .store
-            .read_all(key)
+            .read_all_limited(key, MAX_CONTROL_MESSAGE_BYTES)
             .await
             .map_err(|source| Error::Storage { source })?;
         M::decode(bytes).map_err(|source| Error::Decode {

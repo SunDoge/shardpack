@@ -22,10 +22,7 @@ pub async fn publish_snapshot(
         .map_err(|source| Error::Manifest { source })?;
     let key = snapshot_manifest_key(prefix, &id);
     let encoded = manifest.encode_to_vec();
-    let input = futures_util::stream::once({
-        let encoded = encoded.clone();
-        async move { Ok(bytes::Bytes::from(encoded)) }
-    });
+    let input = futures_util::stream::once(async move { Ok(bytes::Bytes::from(encoded)) });
     match store.write_immutable(&key, Box::pin(input)).await {
         Ok(()) => Ok(manifest),
         Err(StorageError::AlreadyExists { .. }) => {
@@ -41,8 +38,16 @@ pub async fn publish_snapshot(
 }
 
 pub async fn load_snapshot(store: &Store, key: &str) -> Result<proto::SnapshotManifest> {
+    load_snapshot_with_limit(store, key, crate::DEFAULT_MAX_MANIFEST_BYTES).await
+}
+
+pub async fn load_snapshot_with_limit(
+    store: &Store,
+    key: &str,
+    max_bytes: usize,
+) -> Result<proto::SnapshotManifest> {
     let bytes = store
-        .read_all(key)
+        .read_all_limited(key, max_bytes)
         .await
         .map_err(|source| Error::Storage { source })?;
     let manifest = proto::SnapshotManifest::decode(bytes).map_err(|source| Error::Manifest {
@@ -53,8 +58,16 @@ pub async fn load_snapshot(store: &Store, key: &str) -> Result<proto::SnapshotMa
 }
 
 pub async fn load_layout(store: &Store, key: &str) -> Result<proto::LayoutManifest> {
+    load_layout_with_limit(store, key, crate::DEFAULT_MAX_MANIFEST_BYTES).await
+}
+
+pub async fn load_layout_with_limit(
+    store: &Store,
+    key: &str,
+    max_bytes: usize,
+) -> Result<proto::LayoutManifest> {
     let bytes = store
-        .read_all(key)
+        .read_all_limited(key, max_bytes)
         .await
         .map_err(|source| Error::Storage { source })?;
     let manifest = proto::LayoutManifest::decode(bytes).map_err(|source| Error::Manifest {

@@ -4,7 +4,7 @@ use async_stream::stream;
 use bytes::Bytes;
 use shardpack_cache::LocalCache;
 use shardpack_manifest::{ShardId, proto};
-use shardpack_storage::{AsyncObjectReader, Store};
+use shardpack_storage::{AsyncObjectReader, Store, StoreRegistry};
 use tokio::{
     io::{AsyncReadExt, Error as IoError},
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
@@ -53,11 +53,12 @@ impl PrefetchQueue {
     pub(crate) fn take_next(
         &mut self,
         expected_index: usize,
-        store: &Store,
+        stores: &StoreRegistry,
         cache: Option<&LocalCache>,
         shards: &[proto::ShardMeta],
+        shard_order: &[usize],
     ) -> Result<Option<AsyncObjectReader>> {
-        self.fill(store, cache, shards)?;
+        self.fill(stores, cache, shards, shard_order)?;
         let Some((index, reader)) = self.readers.pop_front() else {
             return Ok(None);
         };
@@ -66,28 +67,35 @@ impl PrefetchQueue {
                 reason: "network prefetch queue is out of order",
             });
         }
-        self.fill(store, cache, shards)?;
+        self.fill(stores, cache, shards, shard_order)?;
         Ok(Some(reader))
     }
 
     fn fill(
         &mut self,
-        store: &Store,
+        stores: &StoreRegistry,
         cache: Option<&LocalCache>,
         shards: &[proto::ShardMeta],
+        shard_order: &[usize],
     ) -> Result<()> {
         let per_reader_bytes = self.options.max_bytes / self.options.concurrency;
-        while self.readers.len() < self.options.concurrency && self.scheduled_index < shards.len() {
+        while self.readers.len() < self.options.concurrency
+            && self.scheduled_index < shard_order.len()
+        {
             let index = self.scheduled_index;
-            let meta = shards[index].clone();
+            let meta = &shards[shard_order[index]];
             let shard_id =
                 ShardId::from_slice(&meta.shard_id).map_err(|source| Error::Manifest { source })?;
+            let location = shardpack_manifest::object_location(meta);
+            let store = stores
+                .get(&location.store_id)
+                .map_err(|source| Error::Storage { source })?;
             self.readers.push_back((
                 index,
                 spawn_prefetch(
                     store.clone(),
                     cache.cloned(),
-                    meta.object_uri,
+                    location.object_key.clone(),
                     shard_id,
                     meta.byte_size,
                     per_reader_bytes,

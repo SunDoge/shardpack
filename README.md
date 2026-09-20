@@ -18,17 +18,20 @@ This repository is an early Rust MVP. The implemented vertical slice includes:
 - bounded multi-shard materialization with content-addressed upload and verified layout publication;
 - deterministic node-affine distributed shard assignment and byte-aware bounded shuffle;
 - an operational local/S3 CLI for verification, import, rebalance, pinning and GC;
+- an abi3 Python SDK with bounded prefetching record/batch loaders;
 - a repeatable `/data/rustfs` S3-compatible integration test harness.
 
-The Rust core intentionally has no Lance dependency. A future Python SDK will
-adapt Python/Lance inputs into encoded record streams consumed by this core.
+The Rust core intentionally has no Lance dependency. Python/Lance ingestion can
+remain an adapter while the native Python loader reads ShardPack directly.
 
 See [architecture](docs/architecture.md), [binary format](docs/binary-format.md),
 [encryption](docs/encryption.md), [compatibility policy](docs/compatibility.md),
-[performance](docs/performance.md), [CLI guide](docs/cli.md), and the
-[MVP roadmap](docs/roadmap.md).
+[configuration](docs/configuration.md), [performance](docs/performance.md),
+[CLI guide](docs/cli.md), [Python SDK](docs/python.md),
+[Python writer design](docs/python-writer.md), and the [MVP roadmap](docs/roadmap.md).
 
 ```bash
 cargo test --workspace
 cargo run -p shardpack-cli -- --help
+mise run test:glibc
 ```

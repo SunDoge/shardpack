@@ -60,6 +60,9 @@ Record payloads are opaque. Only the directory exposes stable 128-bit `SampleId`
 payload size, and flags. Block codecs in v1 are `none` and `zstd`. The zstd
 writer uses zrip's reusable transfer-oriented encoder; standard frames are read
 with the reference C decoder for stronger decode throughput across data shapes.
+Block and shard soft-target accounting includes each record's 24-byte directory
+entry as well as its payload. Tiny or empty records therefore cannot create an
+unbounded directory or one unexpectedly enormous shard.
 
 ## Content equivalence
 
@@ -102,9 +105,18 @@ not require the canonical source or a record decoder.
 
 Readers checkpoint before each potentially blocking read. Retryable transport,
 truncation, and checksum failures reopen the immutable object at the containing
-block boundary, validate the complete block again, and discard already-consumed
-records in that block. Retry exhaustion fails the shard; records are never
-silently skipped.
+block boundary and validate the complete block again. Without a cache this uses
+a Range GET. With a cache, resume consumes the cached/tee stream from byte zero
+to the boundary so a cold retry leaves behind one complete verified shard rather
+than an unusable suffix; BLAKE3 therefore still covers the entire object, including
+the discarded prefix. Already-consumed records in the block are then discarded.
+An exact-identity mismatch is retried only through that full cached path; a suffix
+Range GET cannot prove the prefix and therefore fails closed. Retry exhaustion
+fails the shard; records are never silently skipped.
+
+Block-boundary readers also receive an explicit expected encryption mode from
+the pinned layout/key context. They reject a block whose mode differs from the
+shard, even though resume intentionally does not reread the shard header.
 
 The runtime pre-opens a bounded window of future shards and buffers compressed
 object bytes, not decoded records or tensors. Each concurrent shard owns a fixed
@@ -114,7 +126,11 @@ cancels blocked producers through normal backpressure teardown.
 
 Pipeline records receive monotonically increasing sequence numbers before parallel
 decode. The batch stage reorders completed work by that sequence, so worker timing
-does not change training order. A checkpoint request stops new source admission at
+does not change training order. Decode, transform, and batch/output buffering have
+separate byte budgets. A transformed value transfers from the transform budget to
+`batch_queue_bytes` while it is reordered, accumulated, or waiting in an output
+batch; a batch that cannot fit fails explicitly instead of deadlocking or exceeding
+the configured bound. A checkpoint request stops new source admission at
 a full batch boundary, captures the block-level loader position and the complete
 shuffle pool/RNG state, then closes admission and drains every downstream queue.
 `quiesce` returns any already-admitted batches together with the checkpoint; callers
@@ -157,6 +173,11 @@ checksum invalidates the content-addressed cache entry before retry, causing the
 immutable shard to be fetched and atomically published again. Local regular-file
 I/O retains the common `AsyncRead` interface (Tokio may use its blocking file-I/O
 pool internally), keeping S3 and cache sources interchangeable above this layer.
+Concurrent cold misses are coalesced across processes by a per-shard, asynchronously
+polled filesystem lock: one reader streams from object storage while waiters consume
+the verified local entry afterward. Locks use 65,536 hash stripes, bounding internal
+lock-file growth; different stripes continue downloading concurrently and cache
+inventory scans skip the lock directory.
 
 ## Portability and durability
 

@@ -1,2 +1,24 @@
 [tools]
 protoc = "latest"
+zig = "0.15.2"
+"aqua:rust-cross/cargo-zigbuild" = "0.23.2"
+
+[tasks."test:glibc"]
+description = "Build the Linux CLI for glibc 2.17 and verify its symbol floor"
+run = "./scripts/check-glibc.sh"
+
+[tasks."test:python"]
+description = "Build the editable Python extension and run native SDK checks"
+dir = "{{config_root}}/python"
+run = [
+  "uv sync --locked",
+  "uv run maturin develop",
+  "uv run ruff format --check .",
+  "uv run ruff check .",
+  "uv run pytest -q",
+]
+
+[tasks."build:python"]
+description = "Build the abi3 manylinux 2.17 Python wheel with Zig"
+dir = "{{config_root}}/python"
+run = "uv run maturin build --release --zig --compatibility manylinux_2_17 --out dist"

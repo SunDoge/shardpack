@@ -48,9 +48,10 @@
 - Done: runtime `JobPin` acquires an exact persistent `SnapshotId + LayoutId`
   running-job root and explicitly releases it after clean shutdown. A crashed
   process intentionally leaves the pin for recovery or operator cleanup.
-- Done: concurrent misses converge on one verified hard-linked entry, corrupt
-  deletion tolerates races, stale crash partials are cleaned explicitly, and a
-  cross-process filesystem lock serializes publication/eviction/capacity scans.
+- Done: concurrent misses use a cross-process per-shard download lock, so they
+  perform one remote transfer and converge on one verified hard-linked entry.
+  Corrupt deletion tolerates races, stale crash partials are cleaned explicitly,
+  and a separate cross-process lock serializes publication/eviction/capacity scans.
   Verified hits return an already-open descriptor so eviction cannot invalidate an
   active reader. An individually oversized protected shard may temporarily exceed
   the configured soft capacity, by design.
@@ -65,14 +66,23 @@
 - Done: checked-in v1 shard/snapshot/layout golden fixtures are decoded and
   reproduced in CI, with a documented binary/manifest/codec compatibility matrix
   and protobuf evolution rules.
-- Done: cloneable lock-free metrics expose runtime records/bytes, verified shards,
+- Done: cloneable lock-free metrics distinguish completed shards from shards whose
+  exact full-byte BLAKE3 identity was verified, and expose runtime records/bytes,
   prefetches, retries, checksum failures and queue backpressure, plus cache
-  hits/misses, downloaded bytes, corruption, eviction and stale cleanup. Plain
-  snapshots are vendor-neutral and can be exported by the host telemetry stack.
+  hits/misses, downloaded bytes, corruption, true access-recency eviction and stale
+  cleanup. Plain snapshots are vendor-neutral and can be exported by the host
+  telemetry stack.
 - Done: optional encrypted v2 shards protect the directory and compressed payload
   with AWS-LC AES-256-GCM, external key IDs, per-shard derived keys, block-boundary
   recovery, zeroized in-process keys, and a retained cross-provider throughput bench.
-- Deferred: Python SDK and Python-side adapters, including optional Lance input.
+- Done: abi3 Python SDK managed by uv/maturin with typed record and batch iterators,
+  multi-store config loading, bounded shard prefetch, NVMe cache, deterministic
+  rank/worker partitioning, encryption keys, metrics, and native end-to-end tests.
+- Next: single-process Python materialization with batched PyO3 admission, one
+  deterministic Rust shard packer, bounded local staging, concurrent uploads,
+  explicit AES encryption options, and single-owner layout publication.
+- Deferred: multi-process fragment-manifest materialization, optional Lance input,
+  and framework-specific tensor decoders.
 
 Every stage must keep published objects immutable and retain end-to-end tests that
 train/read without access to any canonical source.

@@ -105,6 +105,8 @@ pub enum Error {
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+const MAX_INVENTORY_MANIFEST_BYTES: usize = 512 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct InventoryOptions {
     pub snapshot_prefix: String,
@@ -151,14 +153,13 @@ pub async fn inventory(
         if !object.key.ends_with(".snapshot.pb") {
             continue;
         }
-        let bytes =
-            store
-                .read_all(&object.key)
-                .await
-                .map_err(|source| Error::InventoryStorage {
-                    key: object.key.clone(),
-                    source,
-                })?;
+        let bytes = store
+            .read_all_limited(&object.key, MAX_INVENTORY_MANIFEST_BYTES)
+            .await
+            .map_err(|source| Error::InventoryStorage {
+                key: object.key.clone(),
+                source,
+            })?;
         let manifest =
             proto::SnapshotManifest::decode(bytes).map_err(|source| Error::SnapshotManifest {
                 source: shardpack_manifest::Error::Decode { source },
@@ -192,14 +193,13 @@ pub async fn inventory(
         if !object.key.ends_with(".layout.pb") {
             continue;
         }
-        let bytes =
-            store
-                .read_all(&object.key)
-                .await
-                .map_err(|source| Error::InventoryStorage {
-                    key: object.key.clone(),
-                    source,
-                })?;
+        let bytes = store
+            .read_all_limited(&object.key, MAX_INVENTORY_MANIFEST_BYTES)
+            .await
+            .map_err(|source| Error::InventoryStorage {
+                key: object.key.clone(),
+                source,
+            })?;
         let manifest =
             proto::LayoutManifest::decode(bytes).map_err(|source| Error::LayoutManifest {
                 source: shardpack_manifest::Error::Decode { source },
@@ -600,7 +600,10 @@ mod tests {
             content_fingerprint: Some(fingerprint.clone()),
             shards: vec![proto::ShardMeta {
                 shard_id: vec![shard_byte; 32],
-                object_uri: format!("shards/{shard_byte}.spk"),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: format!("shards/{shard_byte}.spk"),
+                }),
                 byte_size: 1,
                 record_count: 1,
                 block_count: 1,
@@ -834,7 +837,12 @@ mod tests {
         let snapshot = snapshot();
         let mut layout = layout(&snapshot, 2, 1).manifest;
         let referenced_key = format!("shards/{}.spk", hex::encode([2; 32]));
-        layout.shards[0].object_uri.clone_from(&referenced_key);
+        layout.shards[0]
+            .location
+            .as_mut()
+            .unwrap()
+            .object_key
+            .clone_from(&referenced_key);
         layout.layout_id = layout_id(&layout).0.to_vec();
         let orphan_key = format!("shards/{}.spk", hex::encode([9; 32]));
 

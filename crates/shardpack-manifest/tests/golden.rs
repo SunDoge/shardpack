@@ -75,7 +75,10 @@ fn layout_fixture() -> proto::LayoutManifest {
         content_fingerprint: Some(fingerprint.clone()),
         shards: vec![proto::ShardMeta {
             shard_id: vec![0x44; 32],
-            object_uri: "shards/44/example.spk".into(),
+            location: Some(proto::ObjectLocation {
+                store_id: "default".into(),
+                object_key: "shards/44/example.spk".into(),
+            }),
             byte_size: 89,
             record_count: 1,
             block_count: 1,

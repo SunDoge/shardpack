@@ -27,11 +27,14 @@ impl TryFrom<u8> for EncryptionAlgorithm {
     }
 }
 
-struct Secret([u8; 32]);
+struct Secret {
+    bytes: [u8; 32],
+    cipher: LessSafeKey,
+}
 
 impl Drop for Secret {
     fn drop(&mut self) {
-        self.0.zeroize();
+        self.bytes.zeroize();
     }
 }
 
@@ -42,11 +45,18 @@ pub struct EncryptionKey(Arc<Secret>);
 impl EncryptionKey {
     #[must_use]
     pub fn new(bytes: [u8; 32]) -> Self {
-        Self(Arc::new(Secret(bytes)))
+        let cipher = LessSafeKey::new(
+            UnboundKey::new(&AES_256_GCM, &bytes).expect("AES-256 key has fixed length"),
+        );
+        Self(Arc::new(Secret { bytes, cipher }))
     }
 
     pub(crate) fn bytes(&self) -> &[u8; 32] {
-        &self.0.0
+        &self.0.bytes
+    }
+
+    fn cipher(&self) -> &LessSafeKey {
+        &self.0.cipher
     }
 
     pub(crate) fn derive_for_shard(&self, salt: &[u8; 16]) -> Self {
@@ -77,10 +87,8 @@ pub(crate) fn encrypt(
     aad: &[u8],
     body: &mut Vec<u8>,
 ) -> Result<()> {
-    let cipher = LessSafeKey::new(
-        UnboundKey::new(&AES_256_GCM, key.bytes()).expect("AES-256 key has fixed length"),
-    );
-    let tag = cipher
+    let tag = key
+        .cipher()
         .seal_in_place_separate_tag(Nonce::assume_unique_for_key(*nonce), Aad::from(aad), body)
         .map_err(|_| Error::AuthenticationFailed)?;
     body.extend_from_slice(tag.as_ref());
@@ -97,12 +105,11 @@ pub(crate) fn decrypt(
         .len()
         .checked_sub(AEAD_TAG_BYTES)
         .ok_or(Error::AuthenticationFailed)?;
-    let tag = body[tag_offset..].to_vec();
+    let tag: [u8; AEAD_TAG_BYTES] = body[tag_offset..]
+        .try_into()
+        .expect("tag offset leaves exactly one authentication tag");
     body.truncate(tag_offset);
-    let cipher = LessSafeKey::new(
-        UnboundKey::new(&AES_256_GCM, key.bytes()).expect("AES-256 key has fixed length"),
-    );
-    cipher
+    key.cipher()
         .open_in_place_separate_tag(
             Nonce::assume_unique_for_key(*nonce),
             Aad::from(aad),

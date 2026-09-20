@@ -38,3 +38,19 @@ Checked-in golden fixtures cover:
 The tests decode, validate, and reproduce these fixtures. This makes accidental
 wire changes, canonical-ID changes, and loss of old optional-field defaults visible
 in CI.
+
+## Linux binary compatibility
+
+The release CLI targets glibc 2.17 on x86-64 Linux. Zig and `cargo-zigbuild` are
+versioned as project tools in `mise.toml`; install and run the compatibility check
+with:
+
+```bash
+mise install
+mise run test:glibc
+```
+
+The task builds the real `shardpack` release binary for
+`x86_64-unknown-linux-gnu.2.17`, inspects its ELF version requirements, rejects any
+`GLIBC_*` dependency newer than 2.17, and smoke-tests the resulting CLI. `readelf`
+from GNU binutils is the only required system utility.

@@ -86,6 +86,7 @@ pub struct RuntimeLimits {
     pub transform_workers: usize,
     pub transform_queue_bytes: usize,
     pub batch_prefetch: usize,
+    pub batch_queue_bytes: usize,
 }
 
 impl Default for RuntimeLimits {
@@ -101,6 +102,7 @@ impl Default for RuntimeLimits {
             transform_workers: 4,
             transform_queue_bytes: 256 * 1024 * 1024,
             batch_prefetch: 2,
+            batch_queue_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -123,7 +125,7 @@ impl Default for PipelineConfig {
 }
 
 pub struct TrainingPipeline<T> {
-    output: mpsc::Receiver<Result<Vec<T>>>,
+    output: mpsc::Receiver<Result<BudgetedBatch<T>>>,
     cancelled: Arc<AtomicBool>,
     checkpoint_requested: Arc<AtomicBool>,
     checkpoint: Option<oneshot::Receiver<PipelineCheckpoint>>,
@@ -226,6 +228,11 @@ impl<T: Send + 'static> TrainingPipeline<T> {
         T: ByteSize,
     {
         validate_config(&config)?;
+        let [
+            decode_queue_records,
+            transform_queue_records,
+            batch_queue_records,
+        ] = queue_record_capacities(&config)?;
         let reader = reader
             .with_cache_max_bytes(config.limits.cache_max_bytes)
             .with_network_prefetch(NetworkPrefetch {
@@ -237,21 +244,22 @@ impl<T: Send + 'static> TrainingPipeline<T> {
         let checkpoint_requested = Arc::new(AtomicBool::new(false));
         let (checkpoint_tx, checkpoint_rx) = oneshot::channel();
         let (encoded_tx, encoded_rx) = byte_channel(
-            config.limits.decode_workers.max(1) * 2,
+            decode_queue_records,
             config.limits.decode_queue_bytes,
             metrics.clone(),
         );
         let (decoded_tx, decoded_rx) = byte_channel(
-            config.limits.transform_workers.max(1) * 2,
+            transform_queue_records,
             config.limits.transform_queue_bytes,
             metrics.clone(),
         );
         let (transformed_tx, transformed_rx) = byte_channel(
-            config.batch_records.max(1) * config.limits.batch_prefetch,
+            batch_queue_records,
             config.limits.transform_queue_bytes,
-            metrics,
+            metrics.clone(),
         );
         let (output_tx, output) = mpsc::channel(config.limits.batch_prefetch);
+        let batch_budget = Arc::new(Semaphore::new(config.limits.batch_queue_bytes));
         let decoder = Arc::new(decoder);
         let transform = Arc::new(transform);
         let encoded_rx = Arc::new(Mutex::new(encoded_rx));
@@ -294,9 +302,14 @@ impl<T: Send + 'static> TrainingPipeline<T> {
         tasks.push(tokio::spawn(batch_worker(
             transformed_rx,
             output_tx.clone(),
-            cancelled.clone(),
-            config.batch_records,
-            batch_start_sequence,
+            BatchControl {
+                cancelled: cancelled.clone(),
+                batch_records: config.batch_records,
+                next_sequence: batch_start_sequence,
+                budget: batch_budget,
+                max_bytes: config.limits.batch_queue_bytes,
+                metrics,
+            },
         )));
         drop(output_tx);
         Ok(Self {
@@ -309,7 +322,11 @@ impl<T: Send + 'static> TrainingPipeline<T> {
     }
 
     pub async fn next_batch(&mut self) -> Option<Result<Vec<T>>> {
-        let next = self.output.recv().await;
+        let next = self
+            .output
+            .recv()
+            .await
+            .map(|result| result.map(|batch| batch.values));
         if next.as_ref().is_some_and(Result::is_err) {
             self.cancelled.store(true, Ordering::Release);
             for task in &self.tasks {
@@ -334,7 +351,7 @@ impl<T: Send + 'static> TrainingPipeline<T> {
         self.checkpoint_requested.store(true, Ordering::Release);
         let mut pending_batches = Vec::new();
         while let Some(batch) = self.output.recv().await {
-            pending_batches.push(batch?);
+            pending_batches.push(batch?.values);
         }
         let checkpoint = self
             .checkpoint
@@ -369,6 +386,11 @@ struct Budgeted<T> {
     _permit: OwnedSemaphorePermit,
 }
 
+struct BudgetedBatch<T> {
+    values: Vec<T>,
+    _permits: Vec<OwnedSemaphorePermit>,
+}
+
 struct ByteSender<T> {
     sender: mpsc::Sender<Budgeted<T>>,
     budget: Arc<Semaphore>,
@@ -395,6 +417,15 @@ struct FetchControl {
     checkpoint_sender: oneshot::Sender<PipelineCheckpoint>,
     config: PipelineConfig,
     restored: Option<PipelineCheckpoint>,
+}
+
+struct BatchControl {
+    cancelled: Arc<AtomicBool>,
+    batch_records: usize,
+    next_sequence: u64,
+    budget: Arc<Semaphore>,
+    max_bytes: usize,
+    metrics: RuntimeMetrics,
 }
 
 fn byte_channel<T>(
@@ -456,7 +487,7 @@ impl<T> ByteReceiver<T> {
 async fn fetch_and_shuffle<T>(
     mut reader: DatasetReader,
     encoded_tx: ByteSender<Sequenced<EncodedRecord>>,
-    errors: mpsc::Sender<Result<Vec<T>>>,
+    errors: mpsc::Sender<Result<BudgetedBatch<T>>>,
     control: FetchControl,
 ) where
     T: Send + 'static,
@@ -549,7 +580,7 @@ async fn decode_worker<D, T>(
     input: Arc<Mutex<ByteReceiver<Sequenced<EncodedRecord>>>>,
     output: ByteSender<Sequenced<D::Output>>,
     decoder: Arc<D>,
-    errors: mpsc::Sender<Result<Vec<T>>>,
+    errors: mpsc::Sender<Result<BudgetedBatch<T>>>,
     cancelled: Arc<AtomicBool>,
 ) where
     D: RecordDecoder,
@@ -605,7 +636,7 @@ async fn transform_worker<D, X, T>(
     input: Arc<Mutex<ByteReceiver<Sequenced<D>>>>,
     output: ByteSender<Sequenced<T>>,
     transform: Arc<X>,
-    errors: mpsc::Sender<Result<Vec<T>>>,
+    errors: mpsc::Sender<Result<BudgetedBatch<T>>>,
     cancelled: Arc<AtomicBool>,
 ) where
     D: Send + 'static,
@@ -659,26 +690,81 @@ async fn transform_worker<D, X, T>(
     }
 }
 
-async fn batch_worker<T: Send + 'static>(
+async fn batch_worker<T: ByteSize + Send + 'static>(
     mut input: ByteReceiver<Sequenced<T>>,
-    output: mpsc::Sender<Result<Vec<T>>>,
-    cancelled: Arc<AtomicBool>,
-    batch_records: usize,
-    mut next_sequence: u64,
+    output: mpsc::Sender<Result<BudgetedBatch<T>>>,
+    control: BatchControl,
 ) {
+    let BatchControl {
+        cancelled,
+        batch_records,
+        mut next_sequence,
+        budget: batch_budget,
+        max_bytes: batch_max_bytes,
+        metrics,
+    } = control;
     let mut batch = Vec::with_capacity(batch_records);
+    let mut batch_permits = Vec::with_capacity(batch_records);
+    let mut batch_bytes = 0_usize;
     let mut reorder = BTreeMap::new();
     while !cancelled.load(Ordering::Acquire) {
         match input.recv().await {
             Some(item) => {
-                reorder.insert(item.value.sequence, item.value.value);
-                while let Some(value) = reorder.remove(&next_sequence) {
+                reorder.insert(item.value.sequence, (item.value.value, item._permit));
+                while let Some((value, input_permit)) = reorder.remove(&next_sequence) {
                     next_sequence += 1;
-                    batch.push(value);
-                    if batch.len() == batch_records
-                        && output.send(Ok(std::mem::take(&mut batch))).await.is_err()
-                    {
+                    let value_bytes = value.byte_size().max(1);
+                    let Some(next_batch_bytes) = batch_bytes.checked_add(value_bytes) else {
+                        cancelled.store(true, Ordering::Release);
+                        let _ = output
+                            .send(Err(Error::RecordTooLarge {
+                                bytes: usize::MAX,
+                                limit: batch_max_bytes,
+                            }))
+                            .await;
                         return;
+                    };
+                    if next_batch_bytes > batch_max_bytes || value_bytes > u32::MAX as usize {
+                        cancelled.store(true, Ordering::Release);
+                        let _ = output
+                            .send(Err(Error::RecordTooLarge {
+                                bytes: next_batch_bytes,
+                                limit: batch_max_bytes.min(u32::MAX as usize),
+                            }))
+                            .await;
+                        return;
+                    }
+                    let permits = u32::try_from(value_bytes).expect("bounded by u32::MAX");
+                    let batch_permit = match batch_budget.clone().try_acquire_many_owned(permits) {
+                        Ok(permit) => permit,
+                        Err(tokio::sync::TryAcquireError::NoPermits) => {
+                            metrics.queue_backpressure();
+                            match batch_budget.clone().acquire_many_owned(permits).await {
+                                Ok(permit) => permit,
+                                Err(_) => return,
+                            }
+                        }
+                        Err(tokio::sync::TryAcquireError::Closed) => return,
+                    };
+                    drop(input_permit);
+                    batch.push(value);
+                    batch_permits.push(batch_permit);
+                    batch_bytes = next_batch_bytes;
+                    if batch.len() == batch_records {
+                        let completed = BudgetedBatch {
+                            values: std::mem::replace(
+                                &mut batch,
+                                Vec::with_capacity(batch_records),
+                            ),
+                            _permits: std::mem::replace(
+                                &mut batch_permits,
+                                Vec::with_capacity(batch_records),
+                            ),
+                        };
+                        batch_bytes = 0;
+                        if output.send(Ok(completed)).await.is_err() {
+                            return;
+                        }
                     }
                 }
             }
@@ -693,7 +779,12 @@ async fn batch_worker<T: Send + 'static>(
                     return;
                 }
                 if !batch.is_empty() {
-                    let _ = output.send(Ok(batch)).await;
+                    let _ = output
+                        .send(Ok(BudgetedBatch {
+                            values: batch,
+                            _permits: batch_permits,
+                        }))
+                        .await;
                 }
                 return;
             }
@@ -702,7 +793,7 @@ async fn batch_worker<T: Send + 'static>(
 }
 
 async fn fail_pipeline<T>(
-    output: &mpsc::Sender<Result<Vec<T>>>,
+    output: &mpsc::Sender<Result<BudgetedBatch<T>>>,
     cancelled: &AtomicBool,
     error: Error,
 ) {
@@ -731,6 +822,7 @@ fn validate_config(config: &PipelineConfig) -> Result<()> {
         ("transform_workers", config.limits.transform_workers),
         ("transform_queue_bytes", config.limits.transform_queue_bytes),
         ("batch_prefetch", config.limits.batch_prefetch),
+        ("batch_queue_bytes", config.limits.batch_queue_bytes),
         ("batch_records", config.batch_records),
     ] {
         if value == 0 {
@@ -743,6 +835,7 @@ fn validate_config(config: &PipelineConfig) -> Result<()> {
     for (field, value) in [
         ("decode_queue_bytes", config.limits.decode_queue_bytes),
         ("transform_queue_bytes", config.limits.transform_queue_bytes),
+        ("batch_queue_bytes", config.limits.batch_queue_bytes),
     ] {
         if value > u32::MAX as usize {
             return Err(Error::InvalidLimit {
@@ -754,15 +847,50 @@ fn validate_config(config: &PipelineConfig) -> Result<()> {
     Ok(())
 }
 
+fn queue_record_capacities(config: &PipelineConfig) -> Result<[usize; 3]> {
+    let decode = config
+        .limits
+        .decode_workers
+        .checked_mul(2)
+        .ok_or(Error::InvalidLimit {
+            field: "decode_workers",
+            reason: "queue capacity overflows usize",
+        })?;
+    let transform = config
+        .limits
+        .transform_workers
+        .checked_mul(2)
+        .ok_or(Error::InvalidLimit {
+            field: "transform_workers",
+            reason: "queue capacity overflows usize",
+        })?;
+    let batches = config
+        .batch_records
+        .checked_mul(config.limits.batch_prefetch)
+        .ok_or(Error::InvalidLimit {
+            field: "batch_records",
+            reason: "batch prefetch capacity overflows usize",
+        })?;
+    Ok([decode, transform, batches])
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use bytes::Bytes;
     use futures_util::stream;
     use shardpack_format::{ContentFingerprint, ShardWriter, WriterOptions};
     use shardpack_manifest::{layout_id, proto};
 
-    use super::{PipelineConfig, RecordDecoder, RecordTransform, RuntimeLimits, TrainingPipeline};
-    use crate::{DatasetReader, EncodedRecord};
+    use super::{
+        BatchControl, PipelineConfig, RecordDecoder, RecordTransform, RuntimeLimits, Sequenced,
+        TrainingPipeline, batch_worker, byte_channel, queue_record_capacities,
+    };
+    use crate::{DatasetReader, EncodedRecord, RuntimeMetrics};
 
     struct Decode;
     impl RecordDecoder for Decode {
@@ -805,6 +933,126 @@ mod tests {
         }
     }
 
+    #[test]
+    fn queue_record_capacity_overflow_is_rejected() {
+        let mut config = PipelineConfig::default();
+        config.limits.decode_workers = usize::MAX;
+        assert!(matches!(
+            queue_record_capacities(&config),
+            Err(crate::Error::InvalidLimit {
+                field: "decode_workers",
+                ..
+            })
+        ));
+
+        config.limits.decode_workers = 1;
+        config.batch_records = usize::MAX;
+        assert!(matches!(
+            queue_record_capacities(&config),
+            Err(crate::Error::InvalidLimit {
+                field: "batch_records",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn transformed_byte_budget_follows_queued_batches() {
+        let (sender, receiver) = byte_channel(4, 8, RuntimeMetrics::default());
+        let transform_budget = Arc::clone(&sender.budget);
+        let batch_budget = Arc::new(tokio::sync::Semaphore::new(8));
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker = tokio::spawn(batch_worker(
+            receiver,
+            output_tx,
+            BatchControl {
+                cancelled: Arc::clone(&cancelled),
+                batch_records: 2,
+                next_sequence: 0,
+                budget: Arc::clone(&batch_budget),
+                max_bytes: 8,
+                metrics: RuntimeMetrics::default(),
+            },
+        ));
+
+        sender
+            .send(
+                Sequenced {
+                    sequence: 0,
+                    value: Bytes::from_static(b"abcd"),
+                },
+                4,
+                "test",
+            )
+            .await
+            .unwrap();
+        sender
+            .send(
+                Sequenced {
+                    sequence: 1,
+                    value: Bytes::from_static(b"efgh"),
+                },
+                4,
+                "test",
+            )
+            .await
+            .unwrap();
+        drop(sender);
+
+        while output_rx.is_empty() {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(transform_budget.available_permits(), 8);
+        assert_eq!(batch_budget.available_permits(), 0);
+        let batch = output_rx.recv().await.unwrap().unwrap();
+        assert_eq!(batch.values.len(), 2);
+        drop(batch);
+        assert_eq!(batch_budget.available_permits(), 8);
+        cancelled.store(true, Ordering::Release);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn batch_larger_than_byte_budget_fails_instead_of_deadlocking() {
+        let (sender, receiver) = byte_channel(4, 8, RuntimeMetrics::default());
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker = tokio::spawn(batch_worker(
+            receiver,
+            output_tx,
+            BatchControl {
+                cancelled: Arc::clone(&cancelled),
+                batch_records: 2,
+                next_sequence: 0,
+                budget: Arc::new(tokio::sync::Semaphore::new(7)),
+                max_bytes: 7,
+                metrics: RuntimeMetrics::default(),
+            },
+        ));
+        for (sequence, payload) in [b"abcd", b"efgh"].into_iter().enumerate() {
+            sender
+                .send(
+                    Sequenced {
+                        sequence: sequence as u64,
+                        value: Bytes::copy_from_slice(payload),
+                    },
+                    payload.len(),
+                    "test",
+                )
+                .await
+                .unwrap();
+        }
+        drop(sender);
+
+        assert!(matches!(
+            output_rx.recv().await.unwrap(),
+            Err(crate::Error::RecordTooLarge { bytes: 8, limit: 7 })
+        ));
+        assert!(cancelled.load(Ordering::Acquire));
+        worker.await.unwrap();
+    }
+
     #[tokio::test]
     async fn bounded_pipeline_decodes_transforms_and_batches_all_records() {
         let root = tempfile::tempdir().unwrap();
@@ -837,7 +1085,10 @@ mod tests {
             content_fingerprint: Some(fingerprint(summary.content_fingerprint)),
             shards: vec![proto::ShardMeta {
                 shard_id: summary.shard_id.to_vec(),
-                object_uri: "shards/pipeline.spk".into(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: "shards/pipeline.spk".into(),
+                }),
                 byte_size: summary.byte_size,
                 record_count: 7,
                 block_count: summary.block_count,
@@ -920,7 +1171,10 @@ mod tests {
             content_fingerprint: Some(fingerprint(summary.content_fingerprint)),
             shards: vec![proto::ShardMeta {
                 shard_id: summary.shard_id.to_vec(),
-                object_uri: "shards/checkpoint.spk".into(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: "shards/checkpoint.spk".into(),
+                }),
                 byte_size: summary.byte_size,
                 record_count: 40,
                 block_count: summary.block_count,

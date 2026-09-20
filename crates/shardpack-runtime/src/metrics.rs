@@ -10,6 +10,8 @@ pub struct RuntimeMetrics(Arc<Inner>);
 struct Inner {
     records_read: AtomicU64,
     encoded_bytes_read: AtomicU64,
+    shards_completed: AtomicU64,
+    shard_bytes_completed: AtomicU64,
     shards_verified: AtomicU64,
     shard_bytes_verified: AtomicU64,
     retries: AtomicU64,
@@ -22,6 +24,8 @@ struct Inner {
 pub struct RuntimeMetricsSnapshot {
     pub records_read: u64,
     pub encoded_bytes_read: u64,
+    pub shards_completed: u64,
+    pub shard_bytes_completed: u64,
     pub shards_verified: u64,
     pub shard_bytes_verified: u64,
     pub retries: u64,
@@ -36,6 +40,8 @@ impl RuntimeMetrics {
         RuntimeMetricsSnapshot {
             records_read: self.0.records_read.load(Ordering::Relaxed),
             encoded_bytes_read: self.0.encoded_bytes_read.load(Ordering::Relaxed),
+            shards_completed: self.0.shards_completed.load(Ordering::Relaxed),
+            shard_bytes_completed: self.0.shard_bytes_completed.load(Ordering::Relaxed),
             shards_verified: self.0.shards_verified.load(Ordering::Relaxed),
             shard_bytes_verified: self.0.shard_bytes_verified.load(Ordering::Relaxed),
             retries: self.0.retries.load(Ordering::Relaxed),
@@ -52,11 +58,17 @@ impl RuntimeMetrics {
             .fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
-    pub(crate) fn shard_verified(&self, bytes: u64) {
-        self.0.shards_verified.fetch_add(1, Ordering::Relaxed);
+    pub(crate) fn shard_completed(&self, bytes: u64, exact_identity_verified: bool) {
+        self.0.shards_completed.fetch_add(1, Ordering::Relaxed);
         self.0
-            .shard_bytes_verified
+            .shard_bytes_completed
             .fetch_add(bytes, Ordering::Relaxed);
+        if exact_identity_verified {
+            self.0.shards_verified.fetch_add(1, Ordering::Relaxed);
+            self.0
+                .shard_bytes_verified
+                .fetch_add(bytes, Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn retry(&self, checksum_failure: bool) {

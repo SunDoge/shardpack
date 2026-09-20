@@ -17,6 +17,7 @@ async fn report_s3_sequential_throughput() {
         root: std::env::var("SHARDPACK_TEST_S3_ROOT").ok(),
         endpoint: std::env::var("SHARDPACK_TEST_S3_ENDPOINT").ok(),
         region: std::env::var("AWS_REGION").ok(),
+        profile: None,
         access_key_id: std::env::var("AWS_ACCESS_KEY_ID").ok(),
         secret_access_key: std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
         session_token: std::env::var("AWS_SESSION_TOKEN").ok(),

@@ -1,11 +1,10 @@
 use std::io::Write;
 
 use snafu::ResultExt;
-use zeroize::Zeroize;
 
 use crate::{
     BlockCodec, BlockHeader, ContentFingerprint, ENCRYPTED_FORMAT_VERSION, EncryptionAlgorithm,
-    RecordEntry, Result, ShardHeader,
+    RECORD_ENTRY_SIZE, RecordEntry, Result, ShardHeader,
     checksum::{crc32c, crc32c_slices},
     encryption,
     error::IoSnafu,
@@ -45,6 +44,7 @@ pub struct ShardWriter<W> {
     entries: Vec<RecordEntry>,
     directory: Vec<u8>,
     payload: Vec<u8>,
+    encrypted_body: Vec<u8>,
     fingerprint: ContentFingerprint,
     block_count: u32,
     encryption_key: Option<crate::EncryptionKey>,
@@ -94,6 +94,7 @@ impl<W: Write> ShardWriter<W> {
             entries: Vec::new(),
             directory: Vec::new(),
             payload: Vec::new(),
+            encrypted_body: Vec::new(),
             fingerprint: ContentFingerprint::default(),
             block_count: 0,
             encryption_key,
@@ -121,10 +122,14 @@ impl<W: Write> ShardWriter<W> {
             u32::try_from(payload.len()).map_err(|_| crate::Error::InvalidRecord {
                 reason: "payload exceeds u32 size",
             })?;
+        let mut next_block_bytes =
+            buffered_block_bytes(self.entries.len(), self.payload.len(), payload.len())?;
         if !self.entries.is_empty()
-            && self.payload.len().saturating_add(payload.len()) > self.options.target_block_bytes
+            && (next_block_bytes > self.options.target_block_bytes
+                || self.entries.len() == u32::MAX as usize)
         {
             self.flush_block()?;
+            next_block_bytes = buffered_block_bytes(0, 0, payload.len())?;
         }
         self.entries.push(RecordEntry {
             sample_id,
@@ -133,7 +138,7 @@ impl<W: Write> ShardWriter<W> {
         });
         self.payload.extend_from_slice(payload);
         self.fingerprint.insert(&sample_id, payload);
-        if self.payload.len() >= self.options.target_block_bytes {
+        if next_block_bytes >= self.options.target_block_bytes {
             self.flush_block()?;
         }
         Ok(())
@@ -156,8 +161,25 @@ impl<W: Write> ShardWriter<W> {
         if self.entries.is_empty() {
             return Ok(());
         }
+        if self.block_count == u32::MAX {
+            return Err(crate::Error::InvalidRecord {
+                reason: "shard contains too many blocks",
+            });
+        }
         self.directory.clear();
-        self.directory.reserve(self.entries.len() * 24);
+        let directory_bytes = self.entries.len().checked_mul(RECORD_ENTRY_SIZE).ok_or(
+            crate::Error::InvalidDirectory {
+                reason: "directory size overflow",
+            },
+        )?;
+        u32::try_from(directory_bytes).map_err(|_| crate::Error::InvalidDirectory {
+            reason: "directory exceeds u32 size",
+        })?;
+        self.directory.try_reserve(directory_bytes).map_err(|_| {
+            crate::Error::InvalidDirectory {
+                reason: "cannot allocate record directory",
+            }
+        })?;
         for entry in &self.entries {
             self.directory.extend_from_slice(&entry.encode());
         }
@@ -174,10 +196,13 @@ impl<W: Write> ShardWriter<W> {
         };
         let stored = compressed.as_deref().unwrap_or(&self.payload);
         let encrypted = self.encryption_key.is_some();
-        let nonce_counter =
+        let nonce_counter = if encrypted {
             u16::try_from(self.block_count).map_err(|_| crate::Error::InvalidRecord {
                 reason: "encrypted shard exceeds 65536 blocks",
-            })?;
+            })?
+        } else {
+            0
+        };
         let body_bytes = if encrypted {
             self.directory
                 .len()
@@ -192,7 +217,12 @@ impl<W: Write> ShardWriter<W> {
         let mut header = BlockHeader {
             version: if encrypted { 2 } else { 1 },
             flags: u16::from(
-                self.entries.len() == 1 && self.payload.len() > self.options.target_block_bytes,
+                self.entries.len() == 1
+                    && self
+                        .directory
+                        .len()
+                        .checked_add(self.payload.len())
+                        .is_none_or(|bytes| bytes > self.options.target_block_bytes),
             ),
             record_count: u32::try_from(self.entries.len()).map_err(|_| {
                 crate::Error::InvalidRecord {
@@ -217,24 +247,38 @@ impl<W: Write> ShardWriter<W> {
             } else {
                 [0; 16]
             },
-            nonce_counter: if encrypted { nonce_counter } else { 0 },
+            nonce_counter,
             payload_crc32c: 0,
         };
         if let Some(key) = &self.encryption_key {
-            let mut body = Vec::with_capacity(body_bytes);
-            body.extend_from_slice(&self.directory);
-            body.extend_from_slice(stored);
+            self.encrypted_body.clear();
+            self.encrypted_body.reserve(body_bytes);
+            self.encrypted_body.extend_from_slice(&self.directory);
+            self.encrypted_body.extend_from_slice(stored);
             let encoded = header.encode();
             encryption::encrypt(
                 key,
                 &encryption::block_nonce(nonce_counter),
                 &encoded[..56],
-                &mut body,
+                &mut self.encrypted_body,
             )?;
-            header.payload_crc32c = crc32c(&body);
-            self.write_exact(&header.encode())?;
-            self.write_exact(&body)?;
-            body.zeroize();
+            header.payload_crc32c = crc32c(&self.encrypted_body);
+            write_exact_parts(
+                &mut self.output,
+                &mut self.hasher,
+                &mut self.byte_size,
+                &header.encode(),
+            )?;
+            write_exact_parts(
+                &mut self.output,
+                &mut self.hasher,
+                &mut self.byte_size,
+                &self.encrypted_body,
+            )?;
+            // Successful AEAD sealing has overwritten the plaintext. Keep the
+            // ciphertext allocation for the next block; ciphertext does not
+            // require secret-memory erasure.
+            self.encrypted_body.clear();
         } else {
             header.payload_crc32c = crc32c_slices(&self.directory, stored);
             write_exact_parts(
@@ -258,10 +302,7 @@ impl<W: Write> ShardWriter<W> {
         }
         self.entries.clear();
         self.payload.clear();
-        self.block_count = self
-            .block_count
-            .checked_add(1)
-            .expect("block count overflow");
+        self.block_count += 1;
         Ok(())
     }
 
@@ -275,17 +316,36 @@ impl<W: Write> ShardWriter<W> {
     }
 }
 
+fn buffered_block_bytes(
+    buffered_records: usize,
+    buffered_payload_bytes: usize,
+    next_payload_bytes: usize,
+) -> Result<usize> {
+    buffered_records
+        .checked_add(1)
+        .and_then(|records| records.checked_mul(RECORD_ENTRY_SIZE))
+        .and_then(|directory| directory.checked_add(buffered_payload_bytes))
+        .and_then(|bytes| bytes.checked_add(next_payload_bytes))
+        .ok_or(crate::Error::InvalidRecord {
+            reason: "block buffer size overflow",
+        })
+}
+
 fn write_exact_parts<W: Write>(
     output: &mut W,
     hasher: &mut blake3::Hasher,
     byte_size: &mut u64,
     bytes: &[u8],
 ) -> Result<()> {
+    let next_byte_size =
+        byte_size
+            .checked_add(bytes.len() as u64)
+            .ok_or(crate::Error::InvalidRecord {
+                reason: "shard byte size exceeds u64",
+            })?;
     output.write_all(bytes).context(IoSnafu)?;
     hasher.update(bytes);
-    *byte_size = byte_size
-        .checked_add(bytes.len() as u64)
-        .expect("shard size overflow");
+    *byte_size = next_byte_size;
     Ok(())
 }
 
@@ -293,9 +353,9 @@ fn write_exact_parts<W: Write>(
 mod tests {
     use std::io::{Error as IoError, Write};
 
-    use crate::{BlockCodec, Error, SHARD_HEADER_SIZE, ShardReader};
+    use crate::{BlockCodec, EncryptionKey, Error, SHARD_HEADER_SIZE, ShardReader, encryption};
 
-    use super::{ShardWriter, WriterOptions};
+    use super::{ShardWriter, WriterOptions, write_exact_parts};
 
     #[derive(Default)]
     struct ShortWriter {
@@ -370,6 +430,101 @@ mod tests {
         assert_eq!(reader.next_record().unwrap().unwrap().payload, "abc");
         assert_eq!(reader.next_record().unwrap().unwrap().payload, "defgh");
         assert!(reader.next_record().unwrap().is_none());
+    }
+
+    #[test]
+    fn reuses_encrypted_block_scratch_capacity() {
+        let mut writer =
+            ShardWriter::new_encrypted(Vec::new(), options(), EncryptionKey::new([3; 32])).unwrap();
+        writer.add_record([1; 16], 0, b"abcd").unwrap();
+        let allocation = writer.encrypted_body.as_ptr();
+        let capacity = writer.encrypted_body.capacity();
+        assert!(capacity >= 24 + 4 + encryption::AEAD_TAG_BYTES);
+
+        writer.add_record([2; 16], 0, b"efgh").unwrap();
+        assert_eq!(writer.encrypted_body.as_ptr(), allocation);
+        assert_eq!(writer.encrypted_body.capacity(), capacity);
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn directory_bytes_count_toward_the_block_target() {
+        let mut writer = ShardWriter::new(
+            Vec::new(),
+            WriterOptions {
+                target_block_bytes: 2 * crate::RECORD_ENTRY_SIZE,
+                codec: BlockCodec::None,
+                zstd_level: 1,
+            },
+        )
+        .unwrap();
+        for value in 0..5_u8 {
+            writer.add_record([value; 16], 0, b"").unwrap();
+        }
+        let (bytes, summary) = writer.finish().unwrap();
+        assert_eq!(summary.record_count, 5);
+        assert_eq!(summary.block_count, 3);
+
+        let mut reader = ShardReader::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut records = 0;
+        while reader.next_record().unwrap().is_some() {
+            records += 1;
+        }
+        assert_eq!(records, 5);
+        assert_eq!(reader.block_count(), 3);
+    }
+
+    #[test]
+    fn rejects_block_count_overflow_before_writing_the_block() {
+        let mut writer = ShardWriter::new(Vec::new(), options()).unwrap();
+        writer.block_count = u32::MAX;
+        let bytes_before = writer.output.len();
+        assert!(matches!(
+            writer.add_record([1; 16], 0, b"abcd"),
+            Err(Error::InvalidRecord {
+                reason: "shard contains too many blocks"
+            })
+        ));
+        assert_eq!(writer.output.len(), bytes_before);
+    }
+
+    #[test]
+    fn nonce_limit_applies_only_to_encrypted_shards() {
+        let beyond_nonce_space = u32::from(u16::MAX) + 1;
+        let mut plain = ShardWriter::new(Vec::new(), options()).unwrap();
+        plain.block_count = beyond_nonce_space;
+        plain.add_record([1; 16], 0, b"abcd").unwrap();
+        assert_eq!(
+            plain.finish().unwrap().1.block_count,
+            beyond_nonce_space + 1
+        );
+
+        let mut encrypted =
+            ShardWriter::new_encrypted(Vec::new(), options(), EncryptionKey::new([9; 32])).unwrap();
+        encrypted.block_count = beyond_nonce_space;
+        assert!(matches!(
+            encrypted.add_record([1; 16], 0, b"abcd"),
+            Err(Error::InvalidRecord {
+                reason: "encrypted shard exceeds 65536 blocks"
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_byte_count_overflow_before_mutating_output_or_hash() {
+        let mut output = Vec::new();
+        let mut hasher = blake3::Hasher::new();
+        let initial_digest = hasher.finalize();
+        let mut byte_size = u64::MAX;
+        assert!(matches!(
+            write_exact_parts(&mut output, &mut hasher, &mut byte_size, b"x"),
+            Err(Error::InvalidRecord {
+                reason: "shard byte size exceeds u64"
+            })
+        ));
+        assert!(output.is_empty());
+        assert_eq!(hasher.finalize(), initial_digest);
+        assert_eq!(byte_size, u64::MAX);
     }
 
     #[test]

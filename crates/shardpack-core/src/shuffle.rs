@@ -27,11 +27,17 @@ impl ShuffleBuffer {
 
     fn can_accept(&self, record: &EncodedRecord) -> bool {
         self.records.len() < self.options.max_records
-            && self.bytes.saturating_add(record.payload.len()) <= self.options.max_bytes
+            && self
+                .bytes
+                .checked_add(record.payload.len())
+                .is_some_and(|bytes| bytes <= self.options.max_bytes)
     }
 
     fn push(&mut self, record: EncodedRecord) {
-        self.bytes += record.payload.len();
+        self.bytes = self
+            .bytes
+            .checked_add(record.payload.len())
+            .expect("record was accepted by checked byte bound");
         self.records.push(record);
     }
 

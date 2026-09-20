@@ -7,7 +7,7 @@ use shardpack_format::{
     BlockCodec, ContentFingerprint, EncryptionKey, ShardSummary, ShardWriter, WriterOptions,
 };
 use shardpack_manifest::{layout_id, proto};
-use shardpack_storage::{Error as StorageError, Store};
+use shardpack_storage::{Error as StorageError, Store, TempfilePublication};
 
 use crate::shuffle::ShuffledSource;
 use crate::{EncodedRecord, Error, Result, SourceReader};
@@ -36,6 +36,7 @@ pub struct MaterializeEncryption {
 
 #[derive(Clone, Debug)]
 pub struct MaterializeOptions {
+    pub store_id: String,
     pub target_shard_bytes: u64,
     pub target_block_bytes: usize,
     pub block_codec: BlockCodec,
@@ -53,6 +54,7 @@ pub struct MaterializeOptions {
 impl Default for MaterializeOptions {
     fn default() -> Self {
         Self {
+            store_id: "default".into(),
             target_shard_bytes: 1024 * 1024 * 1024,
             target_block_bytes: 16 * 1024 * 1024,
             block_codec: BlockCodec::None,
@@ -168,20 +170,28 @@ async fn materialize_layout_inner<S: SourceReader>(
                 ShardWriter::new(staging.as_file_mut(), writer_options)
             }
             .map_err(|source| Error::Format { source })?;
-            let mut logical_bytes = 0_u64;
+            let mut estimated_bytes = 0_u64;
             let mut record_count = 0_u64;
             loop {
                 let Some(record) = pending.take() else { break };
-                let record_bytes = record.payload.len() as u64;
-                if record_count > 0
-                    && logical_bytes.saturating_add(record_bytes) > options.target_shard_bytes
-                {
+                let record_bytes = estimated_record_bytes(record.payload.len())?;
+                let next_estimated_bytes =
+                    estimated_bytes
+                        .checked_add(record_bytes)
+                        .ok_or(Error::InvalidOption {
+                            field: "target_shard_bytes",
+                            reason: "estimated shard byte size overflow",
+                        })?;
+                if record_count > 0 && next_estimated_bytes > options.target_shard_bytes {
                     pending = Some(record);
                     break;
                 }
                 write_record(&mut writer, &record)?;
-                logical_bytes = logical_bytes.saturating_add(record_bytes);
-                record_count += 1;
+                estimated_bytes = next_estimated_bytes;
+                record_count = record_count.checked_add(1).ok_or(Error::InvalidOption {
+                    field: "target_shard_bytes",
+                    reason: "shard record count overflow",
+                })?;
                 pending = source.next_record()?;
             }
             let (_, summary) = writer.finish().map_err(|source| Error::Format { source })?;
@@ -189,16 +199,22 @@ async fn materialize_layout_inner<S: SourceReader>(
         };
 
         let key = shard_object_key(&options.object_prefix, &summary.shard_id);
-        match store.write_file_immutable(&key, staging.path()).await {
-            Ok(()) | Err(StorageError::AlreadyExists { .. }) => {}
+        let verify_destination = match store.publish_tempfile_immutable(&key, staging).await {
+            Ok(TempfilePublication::AtomicFilesystem) => false,
+            Ok(TempfilePublication::Streamed) | Err(StorageError::AlreadyExists { .. }) => true,
             Err(source) => return Err(Error::Storage { source }),
+        };
+        if verify_destination {
+            verify_uploaded_shard(store, &key, &summary).await?;
         }
-        verify_uploaded_shard(store, &key, &summary).await?;
         total_fingerprint.merge(&summary.content_fingerprint);
         total_bytes = total_bytes
             .checked_add(summary.byte_size)
-            .expect("layout size overflow");
-        shards.push(shard_meta(&key, &summary));
+            .ok_or(Error::InvalidOption {
+                field: "target_shard_bytes",
+                reason: "aggregate layout byte size overflow",
+            })?;
+        shards.push(shard_meta(&options.store_id, &key, &summary));
     }
 
     let (state, materialization_stats) = completion_fields(
@@ -437,7 +453,11 @@ pub(crate) async fn verify_uploaded_shard(
         .map_err(|source| Error::Storage { source })?
     {
         hasher.update(&chunk);
-        bytes = bytes.saturating_add(chunk.len() as u64);
+        bytes = bytes
+            .checked_add(chunk.len() as u64)
+            .ok_or(Error::ObjectIdentityMismatch {
+                key: key.to_owned(),
+            })?;
     }
     if bytes != summary.byte_size || hasher.finalize().as_bytes() != &summary.shard_id {
         return Err(Error::ObjectIdentityMismatch {
@@ -447,10 +467,13 @@ pub(crate) async fn verify_uploaded_shard(
     Ok(())
 }
 
-pub(crate) fn shard_meta(key: &str, summary: &ShardSummary) -> proto::ShardMeta {
+pub(crate) fn shard_meta(store_id: &str, key: &str, summary: &ShardSummary) -> proto::ShardMeta {
     proto::ShardMeta {
         shard_id: summary.shard_id.to_vec(),
-        object_uri: key.to_owned(),
+        location: Some(proto::ObjectLocation {
+            store_id: store_id.to_owned(),
+            object_key: key.to_owned(),
+        }),
         byte_size: summary.byte_size,
         record_count: summary.record_count,
         block_count: summary.block_count,
@@ -466,7 +489,23 @@ pub(crate) fn proto_fingerprint(value: ContentFingerprint) -> proto::ContentFing
     }
 }
 
+pub(crate) fn estimated_record_bytes(payload_bytes: usize) -> Result<u64> {
+    u64::try_from(payload_bytes)
+        .ok()
+        .and_then(|bytes| bytes.checked_add(shardpack_format::RECORD_ENTRY_SIZE as u64))
+        .ok_or(Error::InvalidOption {
+            field: "target_shard_bytes",
+            reason: "record storage estimate overflow",
+        })
+}
+
 pub(crate) fn validate_options(options: &MaterializeOptions) -> Result<()> {
+    if options.store_id.is_empty() {
+        return Err(Error::InvalidOption {
+            field: "store_id",
+            reason: "must not be empty",
+        });
+    }
     if options
         .encryption
         .as_ref()
@@ -536,30 +575,18 @@ pub(crate) async fn publish_layout(
     layout: proto::LayoutManifest,
 ) -> Result<proto::LayoutManifest> {
     let manifest = layout.encode_to_vec();
-    let input = stream::once({
-        let manifest = manifest.clone();
-        async move { Ok(Bytes::from(manifest)) }
-    });
+    let input = stream::once(async move { Ok(Bytes::from(manifest)) });
     match store.write_immutable(key, Box::pin(input)).await {
         Ok(()) => Ok(layout),
         Err(StorageError::AlreadyExists { .. }) => {
-            let mut existing = store
-                .stream(key)
+            let bytes = store
+                .read_all_limited(key, crate::DEFAULT_MAX_MANIFEST_BYTES)
                 .await
                 .map_err(|source| Error::Storage { source })?;
-            let mut bytes = Vec::new();
-            while let Some(chunk) = existing
-                .try_next()
-                .await
-                .map_err(|source| Error::Storage { source })?
-            {
-                bytes.extend_from_slice(&chunk);
-            }
-            let existing = proto::LayoutManifest::decode(bytes.as_slice()).map_err(|source| {
-                Error::Manifest {
+            let existing =
+                proto::LayoutManifest::decode(bytes).map_err(|source| Error::Manifest {
                     source: shardpack_manifest::Error::Decode { source },
-                }
-            })?;
+                })?;
             shardpack_manifest::validate_layout(&existing)
                 .map_err(|source| Error::Manifest { source })?;
             if existing.layout_id == layout.layout_id {
@@ -616,7 +643,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut source = Records(records.into_iter());
         let options = MaterializeOptions {
-            target_shard_bytes: 20,
+            target_shard_bytes: 68,
             target_block_bytes: 16,
             ..Default::default()
         };
@@ -631,7 +658,11 @@ mod tests {
             .await
             .unwrap();
         for shard in &result.layout.shards {
-            store.operator().stat(&shard.object_uri).await.unwrap();
+            store
+                .operator()
+                .stat(&shardpack_manifest::object_location(shard).object_key)
+                .await
+                .unwrap();
         }
 
         let records = (0..5_u8)
@@ -683,7 +714,7 @@ mod tests {
             "kms://dataset/key-8"
         );
         let object = store
-            .open_reader(&result.layout.shards[0].object_uri)
+            .open_reader(&shardpack_manifest::object_location(&result.layout.shards[0]).object_key)
             .await
             .unwrap();
         let mut reader = shardpack_format::AsyncShardReader::new_encrypted(object, key)

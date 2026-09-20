@@ -12,8 +12,6 @@ opendal.workspace = true
 snafu.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tempfile = "3.21"
 [lints]
 workspace = true
-
-[dev-dependencies]
-tempfile = "3.21"

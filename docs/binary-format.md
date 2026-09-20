@@ -67,8 +67,10 @@ This is an implementation detail and does not change the v1 wire format.
 | 20 | 4 | flags |
 
 Payloads are concatenated in directory order. A record cannot cross a block. A
-record larger than the configured block target is emitted as a one-record jumbo
-block; block target size is therefore soft.
+record whose payload plus its directory entry exceeds the configured block target
+is emitted as a one-record jumbo block; block target size is therefore soft. The
+writer counts both raw payload and the 24-byte entries toward the target, keeping
+memory bounded even for empty or very small records.
 
 ## Identity and equivalence
 

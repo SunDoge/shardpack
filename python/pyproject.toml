@@ -1,0 +1,33 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "shardpack"
+version = "0.1.0"
+description = "S3-first streaming loader for ShardPack datasets"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "Typing :: Typed",
+]
+
+[dependency-groups]
+dev = [
+  "maturin>=1.9,<2",
+  "pytest>=8,<10",
+  "ruff>=0.13,<1",
+]
+
+[tool.maturin]
+manifest-path = "../crates/shardpack-python/Cargo.toml"
+module-name = "shardpack._native"
+python-source = "."
+features = ["pyo3/extension-module"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

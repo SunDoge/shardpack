@@ -23,11 +23,11 @@ pub async fn mirror_dataset(
     layout_object_key: &str,
 ) -> Result<MirrorResult> {
     let snapshot_bytes = source
-        .read_all(snapshot_object_key)
+        .read_all_limited(snapshot_object_key, crate::DEFAULT_MAX_MANIFEST_BYTES)
         .await
         .map_err(|source| Error::Storage { source })?;
     let layout_bytes = source
-        .read_all(layout_object_key)
+        .read_all_limited(layout_object_key, crate::DEFAULT_MAX_MANIFEST_BYTES)
         .await
         .map_err(|source| Error::Storage { source })?;
     let snapshot = proto::SnapshotManifest::decode(snapshot_bytes.clone()).map_err(|source| {
@@ -49,11 +49,15 @@ pub async fn mirror_dataset(
     }
 
     for shard in &layout.shards {
+        let location = shardpack_manifest::object_location(shard);
         let stream = source
-            .stream(&shard.object_uri)
+            .stream(&location.object_key)
             .await
             .map_err(|source| Error::Storage { source })?;
-        match destination.write_immutable(&shard.object_uri, stream).await {
+        match destination
+            .write_immutable(&location.object_key, stream)
+            .await
+        {
             Ok(()) | Err(StorageError::AlreadyExists { .. }) => {}
             Err(source) => return Err(Error::Storage { source }),
         }
@@ -93,7 +97,7 @@ async fn publish_exact(store: &Store, key: &str, bytes: bytes::Bytes) -> Result<
         Ok(()) => Ok(()),
         Err(StorageError::AlreadyExists { .. }) => {
             let existing = store
-                .read_all(key)
+                .read_all_limited(key, bytes.len())
                 .await
                 .map_err(|source| Error::Storage { source })?;
             if existing == bytes {
@@ -173,7 +177,10 @@ mod tests {
             content_fingerprint: Some(fingerprint.clone()),
             shards: vec![proto::ShardMeta {
                 shard_id: summary.shard_id.to_vec(),
-                object_uri: shard_key.into(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: shard_key.into(),
+                }),
                 byte_size: summary.byte_size,
                 record_count: 1,
                 block_count: summary.block_count,

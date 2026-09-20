@@ -1,6 +1,6 @@
 use shardpack_format::{AsyncShardReader, Blake3Reader, ContentFingerprint};
 use shardpack_manifest::{SnapshotId, layout_id, proto, snapshot_id};
-use shardpack_storage::Store;
+use shardpack_storage::{Store, StoreRegistry};
 
 use crate::{
     Error, Result,
@@ -13,7 +13,7 @@ pub struct ImportOptions {
     pub dataset_id: String,
     pub description: Option<String>,
     pub record_schema: proto::RecordSchemaDescriptor,
-    pub shard_object_uris: Vec<String>,
+    pub shard_locations: Vec<proto::ObjectLocation>,
     pub snapshot_prefix: String,
     pub layout_prefix: String,
     /// Describes the imported packing. It does not constrain codecs found in
@@ -34,7 +34,16 @@ pub struct ImportedDataset {
 /// consumed once sequentially; block checksums, directory structure, aggregate
 /// content and exact-byte BLAKE3 identity are derived from that pass.
 pub async fn import_shardpack(store: &Store, options: &ImportOptions) -> Result<ImportedDataset> {
-    import_shardpack_inner(store, options, None).await
+    let registry = registry_for_single_store(store, options)?;
+    import_shardpack_inner(store, &registry, options, None).await
+}
+
+pub async fn import_shardpack_from_registry(
+    manifest_store: &Store,
+    stores: &StoreRegistry,
+    options: &ImportOptions,
+) -> Result<ImportedDataset> {
+    import_shardpack_inner(manifest_store, stores, options, None).await
 }
 
 pub async fn import_encrypted_shardpack(
@@ -49,22 +58,26 @@ pub async fn import_encrypted_shardpack(
             reason: "must not be empty",
         });
     }
-    import_shardpack_inner(store, options, Some((key_id, key))).await
+    let registry = registry_for_single_store(store, options)?;
+    import_shardpack_inner(store, &registry, options, Some((key_id, key))).await
 }
 
 async fn import_shardpack_inner(
-    store: &Store,
+    manifest_store: &Store,
+    stores: &StoreRegistry,
     options: &ImportOptions,
     encryption: Option<(&str, shardpack_format::EncryptionKey)>,
 ) -> Result<ImportedDataset> {
     validate_options(options)?;
-    let mut shards = Vec::with_capacity(options.shard_object_uris.len());
+    let mut shards = Vec::with_capacity(options.shard_locations.len());
     let mut total_fingerprint = ContentFingerprint::default();
     let mut total_bytes = 0_u64;
 
-    for object_uri in &options.shard_object_uris {
-        let object = store
-            .open_reader(object_uri)
+    for location in &options.shard_locations {
+        let object = stores
+            .get(&location.store_id)
+            .map_err(|source| Error::Storage { source })?
+            .open_reader(&location.object_key)
             .await
             .map_err(|source| Error::Storage { source })?;
         let mut reader = AsyncShardReader::with_limits_and_key(
@@ -86,7 +99,7 @@ async fn import_shardpack_inner(
         let block_count = reader.block_count();
         if fingerprint.record_count == 0 || block_count == 0 {
             return Err(Error::InvalidOption {
-                field: "shard_object_uris",
+                field: "shard_locations",
                 reason: "empty shards cannot be published",
             });
         }
@@ -94,12 +107,12 @@ async fn import_shardpack_inner(
         total_bytes = total_bytes
             .checked_add(byte_size)
             .ok_or(Error::InvalidOption {
-                field: "shard_object_uris",
+                field: "shard_locations",
                 reason: "aggregate byte size overflow",
             })?;
         shards.push(proto::ShardMeta {
             shard_id: shard_id.to_vec(),
-            object_uri: object_uri.clone(),
+            location: Some(location.clone()),
             byte_size,
             record_count: fingerprint.record_count,
             block_count,
@@ -129,7 +142,7 @@ async fn import_shardpack_inner(
         ..Default::default()
     };
     snapshot.snapshot_id = snapshot_id(&snapshot).0.to_vec();
-    let snapshot = publish_snapshot(store, &options.snapshot_prefix, snapshot).await?;
+    let snapshot = publish_snapshot(manifest_store, &options.snapshot_prefix, snapshot).await?;
     let typed_snapshot_id = SnapshotId::from_slice(&snapshot.snapshot_id)
         .map_err(|source| Error::Manifest { source })?;
     let snapshot_object_key = snapshot_manifest_key(&options.snapshot_prefix, &typed_snapshot_id);
@@ -167,7 +180,7 @@ async fn import_shardpack_inner(
         .try_into()
         .expect("validated layout ID");
     let layout_object_key = manifest_object_key(&options.layout_prefix, &layout_id);
-    let layout = publish_layout(store, &layout_object_key, layout).await?;
+    let layout = publish_layout(manifest_store, &layout_object_key, layout).await?;
 
     Ok(ImportedDataset {
         snapshot,
@@ -191,10 +204,36 @@ pub async fn import_shardpack_coordinated(
     crate::materialize::finish_coordinated(catalog, &lease, operation).await
 }
 
+pub async fn import_shardpack_coordinated_with_registry(
+    manifest_store: &Store,
+    stores: &StoreRegistry,
+    catalog: &shardpack_catalog::Catalog,
+    options: &ImportOptions,
+) -> Result<ImportedDataset> {
+    let lease = catalog
+        .acquire_barrier(shardpack_catalog::new_owner_id(), "standalone-import")
+        .await
+        .map_err(|source| Error::Catalog { source })?;
+    let operation = import_shardpack_from_registry(manifest_store, stores, options).await;
+    crate::materialize::finish_coordinated(catalog, &lease, operation).await
+}
+
+fn registry_for_single_store(store: &Store, options: &ImportOptions) -> Result<StoreRegistry> {
+    let mut stores = StoreRegistry::new();
+    for location in &options.shard_locations {
+        if !stores.contains(&location.store_id) {
+            stores
+                .insert(&location.store_id, store.clone())
+                .map_err(|source| Error::Storage { source })?;
+        }
+    }
+    Ok(stores)
+}
+
 fn validate_options(options: &ImportOptions) -> Result<()> {
-    if options.shard_object_uris.is_empty() {
+    if options.shard_locations.is_empty() {
         return Err(Error::InvalidOption {
-            field: "shard_object_uris",
+            field: "shard_locations",
             reason: "at least one shard is required",
         });
     }
@@ -243,7 +282,10 @@ mod tests {
                     schema_id: vec![5; 32],
                     embedded_schema: Some(vec![1, 2, 3]),
                 },
-                shard_object_uris: vec!["existing/a.spk".into()],
+                shard_locations: vec![proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: "existing/a.spk".into(),
+                }],
                 snapshot_prefix: "snapshots".into(),
                 layout_prefix: "layouts".into(),
                 layout_recipe: proto::LayoutRecipe {

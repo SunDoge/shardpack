@@ -157,7 +157,10 @@ async fn exercise_portable_lifecycle(
     // A block-boundary truncation is structurally valid without a footer, but
     // the runtime must still reject it using the manifest's exact size/hash.
     let shard = &target.shards[0];
-    let bytes = store.read_all(&shard.object_uri).await.unwrap();
+    let bytes = store
+        .read_all(&shardpack_manifest::object_location(shard).object_key)
+        .await
+        .unwrap();
     let header_start = SHARD_HEADER_SIZE;
     let header_end = header_start + BLOCK_HEADER_SIZE;
     let raw_header: [u8; BLOCK_HEADER_SIZE] = bytes[header_start..header_end].try_into().unwrap();
@@ -165,7 +168,7 @@ async fn exercise_portable_lifecycle(
     let first_block_end = header_end + block.stored_payload_bytes as usize;
     assert!(first_block_end < bytes.len());
     std::fs::write(
-        filesystem_root.join(&shard.object_uri),
+        filesystem_root.join(&shardpack_manifest::object_location(shard).object_key),
         &bytes[..first_block_end],
     )
     .unwrap();
@@ -213,6 +216,7 @@ async fn portable_lifecycle_runs_on_s3_compatible_storage() {
         root: std::env::var("SHARDPACK_TEST_S3_ROOT").ok(),
         endpoint: std::env::var("SHARDPACK_TEST_S3_ENDPOINT").ok(),
         region: std::env::var("AWS_REGION").ok(),
+        profile: None,
         access_key_id: std::env::var("AWS_ACCESS_KEY_ID").ok(),
         secret_access_key: std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
         session_token: std::env::var("AWS_SESSION_TOKEN").ok(),

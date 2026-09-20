@@ -13,6 +13,7 @@ clap.workspace = true
 hex.workspace = true
 prost-types.workspace = true
 shardpack-catalog = { path = "../shardpack-catalog" }
+shardpack-config = { path = "../shardpack-config" }
 shardpack-core = { path = "../shardpack-core" }
 shardpack-format = { path = "../shardpack-format" }
 shardpack-gc = { path = "../shardpack-gc" }
@@ -24,5 +25,6 @@ tokio.workspace = true
 [lints]
 workspace = true
 [dev-dependencies]
+blake3.workspace = true
 bytes.workspace = true
 tempfile = "3.23"

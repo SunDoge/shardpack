@@ -13,11 +13,11 @@ cargo bench -p shardpack-format --bench format_throughput
 ```
 
 For 128 MiB of 256 KiB records packed into 16 MiB blocks, removing whole-block
-temporary copies raised `none` write throughput from about 0.38 to 0.81 GiB/s
-and full-validation read throughput from about 1.45 to 2.17 GiB/s. Training
-reads skip the redundant order-independent content fingerprint while retaining
-CRC32C and exact shard BLAKE3 validation, reaching roughly 3.5--4.5 GiB/s in
-repeated runs.
+temporary copies raised `none` write throughput from about 0.38 to 0.95 GiB/s
+and full-validation read throughput from about 1.45 to 2.80 GiB/s in the latest
+run. Training reads skip the redundant order-independent content fingerprint
+while retaining CRC32C and exact shard BLAKE3 validation, reaching 5.32 GiB/s;
+the encrypted training path reached 3.40 GiB/s.
 
 The optimized path:
 
@@ -25,8 +25,25 @@ The optimized path:
   combines the results without concatenating the buffers;
 - transfers `None` payload buffers directly into `Bytes` without another copy;
 - reuses writer directory and payload capacity between blocks;
+- accounts for directory bytes before buffering a record, preventing tiny-record
+  workloads from exceeding the configured block and shard soft targets;
+- reserves the decoded record queue from the validated block directory instead
+  of repeatedly growing it for blocks containing many small records;
 - retains content fingerprint generation for materialization, import, and
   rebalance validation, but not for every training epoch.
+
+The runtime shares one `Arc<LayoutManifest>` across a dataset and its loaders.
+Shard assignment, prefetch, and active-reader state store indices into that
+manifest rather than cloning `ShardMeta` values; retry recovery also reuses the
+same manifest allocation. Distributed and node-affinity assignment sort those
+indices directly, avoiding a second ID vector and an ID-to-index hash table per
+loader.
+
+The bounded shuffle pool performs O(1) random eviction when its record-count
+limit binds and allocation-free reservoir selection when its byte limit binds.
+Python batch iteration drives a complete encoded batch through Tokio in one GIL
+release. Loader-checkpoint protobuf payloads decode as `Bytes` slices backed by
+one shared buffer instead of cloning every buffered record.
 
 ## Zstd implementation
 
@@ -59,6 +76,66 @@ The zstd frame checksum is disabled because every stored block already has a
 CRC32C, encrypted blocks additionally have an AEAD tag, and full shard reads
 validate the exact BLAKE3 identity.
 
+## Real dataset packaging smoke test
+
+The ignored OCR integration test packages each image and its annotation into one
+self-contained record, materializes multiple local shards, and then reads every
+record back through the training runtime with byte-for-byte validation:
+
+```bash
+SHARDPACK_TEST_OCR_DATASET=/data/datasets/ocr_det_dataset_examples \
+  cargo test -p shardpack-cli --test real_dataset -- --ignored --nocapture
+```
+
+The source directory is read-only and the generated layout is placed in temporary
+directories that are removed after the test.
+
+For a larger multi-shard run, the generic image-directory test expects `train/`
+and `val/` trees and should be run in release mode:
+
+```bash
+SHARDPACK_TEST_IMAGE_DATASET=/data/datasets/imagenette2 \
+  cargo test -p shardpack-cli --release --test real_dataset \
+  packs_real_image_dataset_and_reports_sequential_throughput \
+  -- --ignored --nocapture
+```
+
+On the development host, 13,394 Imagenette JPEGs produced six 256 MiB-target
+shards containing 1,496.9 MiB. The original filesystem path copied each staging
+file through OpenDAL and reached 104 MiB/s. Consuming the completed temporary
+file with atomic no-clobber publication raised materialization to 717.5 MiB/s;
+removing the subsequent redundant reread for that same-inode path raised a warm
+run to 1,123.5 MiB/s. The source-compared and runtime-only reads in that run
+reached 975.9 MiB/s and 1,214.2 MiB/s. The published object is identified by the
+BLAKE3 accumulated over the exact bytes written. A same-filesystem atomic
+publication preserves that inode. Streamed S3/cross-filesystem publications and
+pre-existing destination objects are still fully read back and verified before
+the layout is published. A cold-source run reached 259.3 MiB/s, illustrating that
+opening 13k uncached JPEGs can dominate the packaging path.
+
+After moving full retry-checkpoint construction off the per-record path and
+returning already-decoded block records through a no-I/O fast path, a subsequent
+warm run reached 1,680.8 MiB/s for the runtime-only payload pass (1,109.1 MiB/s
+materialization and 1,087.4 MiB/s source-compared read in the same run). These
+figures remain host-cache-sensitive and are regression evidence, not guarantees.
+
+The same test covers full COCO 2017 by selecting its directory names:
+
+```bash
+SHARDPACK_TEST_IMAGE_DATASET=/data/datasets/coco2017 \
+SHARDPACK_TEST_IMAGE_TREES=train2017,val2017 \
+  cargo test -p shardpack-cli --release --test real_dataset \
+  packs_real_image_dataset_and_reports_sequential_throughput \
+  -- --ignored --nocapture
+```
+
+COCO's 123,287 JPEGs produced 76 shards containing 19,203.6 MiB. A first run
+with cold source data materialized at 226.6 MiB/s and performed byte-for-byte
+source comparison at 522.8 MiB/s. A warm-cache run reached 797.2 MiB/s,
+1,129.6 MiB/s with source comparison, and 1,427.4 MiB/s for a runtime-only
+payload pass. The cold/warm gap reflects opening 123k source files; sequential
+ShardPack reads avoid that small-file I/O pattern.
+
 ## RustFS / S3-compatible storage
 
 The retained loopback benchmark transfers a 256 MiB object:
@@ -82,3 +159,26 @@ object upload).
 Use the RustFS benchmark for regression tracking, not as a prediction of WAN S3
 performance. Provider limits, RTT, NIC bandwidth, TLS, and cross-region traffic
 can dominate production results.
+
+## Control-plane memory bounds
+
+Snapshot and layout protobuf reads are streamed through a hard 512 MiB default
+limit instead of using an unbounded object-store `read_all`. Rust callers with
+exceptionally large layouts can select an explicit bound through
+`load_snapshot_with_limit` and `load_layout_with_limit`. Catalog messages use a
+64 MiB bound. Exact-limit objects are accepted; the reader consumes at most one
+additional byte before returning `ReadLimitExceeded` for oversized objects.
+
+## Local-cache coordination
+
+Cold misses are coordinated with bounded, striped cross-process file locks, so
+multiple Python workers requesting the same shard perform one object-store
+download. Lock waiting is asynchronous and does not occupy a Tokio blocking
+thread. Cache capacity remains a soft limit: the exact on-disk inventory is
+scanned under a cross-process mutation lock, but the LRU candidate sort is
+skipped while the inventory is below the configured limit. Each shard hit makes
+one best-effort mtime update, so eviction reflects access recency rather than
+download age without adding metadata writes to the record path. A stale
+corruption report rechecks the current path under the shard download lock before
+deletion, so a slow worker cannot remove a valid copy that another worker already
+repaired.

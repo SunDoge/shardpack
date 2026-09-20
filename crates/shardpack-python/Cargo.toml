@@ -1,0 +1,31 @@
+[package]
+name = "shardpack-python"
+description = "Python bindings for the ShardPack training runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+aws-lc-rs.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+pyo3.workspace = true
+prost.workspace = true
+shardpack-cache = { path = "../shardpack-cache" }
+shardpack-config = { path = "../shardpack-config" }
+shardpack-core = { path = "../shardpack-core" }
+shardpack-format = { path = "../shardpack-format" }
+shardpack-manifest = { path = "../shardpack-manifest" }
+shardpack-runtime = { path = "../shardpack-runtime" }
+shardpack-storage = { path = "../shardpack-storage" }
+tokio.workspace = true
+
+[lints]
+workspace = true

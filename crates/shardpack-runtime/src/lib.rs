@@ -99,6 +99,38 @@ pub fn assigned_shards(
     epoch_seed: u64,
     context: DistributedContext,
 ) -> Result<Vec<ShardId>> {
+    let (consumer, consumers) = distributed_consumer(context)?;
+    let mut keyed: Vec<_> = shards
+        .into_iter()
+        .map(|id| (shuffle_key(&id, epoch_seed), id))
+        .collect();
+    keyed.sort_unstable_by_key(|(key, id)| (*key, *id));
+    Ok(keyed
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, (_, id))| (index % consumers == consumer).then_some(id))
+        .collect())
+}
+
+pub(crate) fn assigned_shard_indices(
+    shards: impl IntoIterator<Item = (usize, ShardId)>,
+    epoch_seed: u64,
+    context: DistributedContext,
+) -> Result<Vec<usize>> {
+    let (consumer, consumers) = distributed_consumer(context)?;
+    let mut keyed = shards
+        .into_iter()
+        .map(|(index, id)| (shuffle_key(&id, epoch_seed), id, index))
+        .collect::<Vec<_>>();
+    keyed.sort_unstable_by_key(|(key, id, _)| (*key, *id));
+    Ok(keyed
+        .into_iter()
+        .enumerate()
+        .filter_map(|(position, (_, _, index))| (position % consumers == consumer).then_some(index))
+        .collect())
+}
+
+fn distributed_consumer(context: DistributedContext) -> Result<(usize, usize)> {
     if context.world_size == 0
         || context.workers_per_rank == 0
         || context.rank >= context.world_size
@@ -106,11 +138,6 @@ pub fn assigned_shards(
     {
         return Err(Error::InvalidTopology);
     }
-    let mut keyed: Vec<_> = shards
-        .into_iter()
-        .map(|id| (shuffle_key(&id, epoch_seed), id))
-        .collect();
-    keyed.sort_unstable_by_key(|(key, id)| (*key, *id));
     let consumers = context
         .world_size
         .checked_mul(context.workers_per_rank)
@@ -120,11 +147,7 @@ pub fn assigned_shards(
         .checked_mul(context.workers_per_rank)
         .and_then(|value| value.checked_add(context.worker))
         .ok_or(Error::InvalidTopology)?;
-    Ok(keyed
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, (_, id))| (index % consumers == consumer).then_some(id))
-        .collect())
+    Ok((consumer, consumers))
 }
 
 /// Assigns each shard to a stable node using highest-random-weight hashing,
@@ -159,6 +182,35 @@ pub fn affinity_assigned_shards(
         .into_iter()
         .enumerate()
         .filter_map(|(index, (_, id))| (index % consumers == consumer).then_some(id))
+        .collect())
+}
+
+pub(crate) fn affinity_assigned_shard_indices(
+    shards: impl IntoIterator<Item = (usize, ShardId)>,
+    epoch_seed: u64,
+    affinity: &NodeAffinity,
+) -> Result<Vec<usize>> {
+    validate_affinity(affinity)?;
+    let mut local = shards
+        .into_iter()
+        .filter(|(_, id)| {
+            preferred_node(id, affinity.affinity_seed, &affinity.node_ids) == affinity.node_id
+        })
+        .map(|(index, id)| (shuffle_key(&id, epoch_seed), id, index))
+        .collect::<Vec<_>>();
+    local.sort_unstable_by_key(|(key, id, _)| (*key, *id));
+
+    let consumers = affinity
+        .local_world_size
+        .checked_mul(affinity.workers_per_rank)
+        .ok_or(Error::InvalidNodeAffinity {
+            reason: "local consumer count overflows usize",
+        })?;
+    let consumer = affinity.local_rank * affinity.workers_per_rank + affinity.worker;
+    Ok(local
+        .into_iter()
+        .enumerate()
+        .filter_map(|(position, (_, _, index))| (position % consumers == consumer).then_some(index))
         .collect())
 }
 
@@ -274,20 +326,33 @@ impl ShufflePool {
                 limit: self.limits.max_bytes,
             });
         }
-        self.bytes += size;
+        self.bytes = self.bytes.checked_add(size).ok_or(Error::InvalidLimit {
+            field: "shuffle_max_bytes",
+            reason: "byte accounting overflow",
+        })?;
         self.records.push(record);
         if self.records.len() > self.limits.max_records || self.bytes > self.limits.max_bytes {
-            let eligible = self
-                .records
-                .iter()
-                .enumerate()
-                .filter(|(_, candidate)| {
-                    self.records.len() - 1 <= self.limits.max_records
-                        && self.bytes - candidate.payload.len() <= self.limits.max_bytes
-                })
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>();
-            let index = eligible[self.rng.index(eligible.len())];
+            let excess_bytes = self.bytes.saturating_sub(self.limits.max_bytes);
+            let index = if excess_bytes == 0 {
+                // Only the record-count bound was crossed, so every record is
+                // eligible and selection remains O(1).
+                self.rng.index(self.records.len())
+            } else {
+                // Reservoir-sample directly from byte-eligible records. This
+                // preserves randomized eviction without allocating an index
+                // vector on every push once the pool is full.
+                let mut selected = None;
+                let mut eligible = 0_usize;
+                for (index, candidate) in self.records.iter().enumerate() {
+                    if candidate.payload.len() >= excess_bytes {
+                        eligible += 1;
+                        if self.rng.index(eligible) == 0 {
+                            selected = Some(index);
+                        }
+                    }
+                }
+                selected.expect("the newly pushed bounded record is byte-eligible")
+            };
             let emitted = self.records.swap_remove(index);
             self.bytes -= emitted.payload.len();
             Ok(Some(emitted))
@@ -317,6 +382,16 @@ impl ShufflePool {
     }
 
     pub fn restore(checkpoint: ShufflePoolCheckpoint) -> Result<Self> {
+        Self::validate_checkpoint(&checkpoint)?;
+        Ok(Self {
+            limits: checkpoint.limits,
+            records: checkpoint.records,
+            bytes: checkpoint.buffered_bytes,
+            rng: XorShift64(checkpoint.rng_state),
+        })
+    }
+
+    pub fn validate_checkpoint(checkpoint: &ShufflePoolCheckpoint) -> Result<()> {
         let actual_bytes = checkpoint
             .records
             .iter()
@@ -334,12 +409,7 @@ impl ShufflePool {
                 reason: "invalid bounded shuffle pool state",
             });
         }
-        Ok(Self {
-            limits: checkpoint.limits,
-            records: checkpoint.records,
-            bytes: checkpoint.buffered_bytes,
-            rng: XorShift64(checkpoint.rng_state),
-        })
+        Ok(())
     }
 
     #[must_use]
@@ -368,7 +438,8 @@ impl XorShift64 {
 mod tests {
     use crate::{
         DistributedContext, EncodedRecord, NodeAffinity, ShuffleLimits, ShufflePool,
-        affinity_assigned_shards, assigned_shards,
+        affinity_assigned_shard_indices, affinity_assigned_shards, assigned_shard_indices,
+        assigned_shards,
     };
     use bytes::Bytes;
     use shardpack_manifest::ShardId;
@@ -400,6 +471,39 @@ mod tests {
         .unwrap();
         assert!(a.iter().all(|id| !b.contains(id)));
         assert_eq!(a.len() + b.len(), ids.len());
+    }
+
+    #[test]
+    fn index_assignment_matches_public_id_assignment_order() {
+        let ids: Vec<_> = (0..200).map(|n| ShardId([n; 32])).collect();
+        let context = DistributedContext {
+            rank: 2,
+            world_size: 4,
+            worker: 1,
+            workers_per_rank: 3,
+        };
+        let expected = assigned_shards(ids.clone(), 91, context).unwrap();
+        let indices = assigned_shard_indices(ids.iter().copied().enumerate(), 91, context).unwrap();
+        assert_eq!(
+            indices
+                .into_iter()
+                .map(|index| ids[index])
+                .collect::<Vec<_>>(),
+            expected
+        );
+
+        let topology = affinity("node-b", &["node-c", "node-a", "node-b"], 1);
+        let expected = affinity_assigned_shards(ids.clone(), 27, &topology).unwrap();
+        let indices =
+            affinity_assigned_shard_indices(ids.iter().copied().enumerate(), 27, &topology)
+                .unwrap();
+        assert_eq!(
+            indices
+                .into_iter()
+                .map(|index| ids[index])
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 
     #[test]

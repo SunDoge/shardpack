@@ -36,12 +36,16 @@ cargo bench -p shardpack-format --bench decrypt_throughput
 On the development x86_64 host, 16 MiB in-place block decryption measured:
 
 ```text
-RustCrypto AES-256-GCM    about 3.5 GiB/s
-ChaCha20-Poly1305         about 1.8 GiB/s
-AWS-LC AES-256-GCM        about 7.2 GiB/s
+RustCrypto AES-256-GCM         2.89 GiB/s
+RustCrypto ChaCha20-Poly1305   2.01 GiB/s
+AWS-LC AES-256-GCM              9.49 GiB/s
+AWS-LC ChaCha20-Poly1305        3.84 GiB/s
 ```
 
 These are single-process microbenchmark results, not a cross-machine guarantee.
 Re-run them on the intended GPU nodes, especially on ARM and machines without AES
-acceleration. At about 7.2 GiB/s, decryption is unlikely to bottleneck a single S3 stream
-or NVMe reader; aggregate multi-worker throughput still needs end-to-end profiling.
+acceleration. On this host AWS-LC AES is about 2.47 times as fast as AWS-LC
+ChaCha20, so AES remains the only emitted algorithm for the MVP. The manifest and
+block header retain an explicit algorithm field for a future portable alternative.
+At 9.49 GiB/s, decryption is unlikely to bottleneck a single S3 stream or NVMe
+reader; aggregate multi-worker throughput still needs end-to-end profiling.

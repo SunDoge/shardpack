@@ -5,10 +5,7 @@ use snafu::ResultExt;
 
 use crate::{
     BLOCK_HEADER_SIZE, BlockHeader, ContentFingerprint, Error, RECORD_ENTRY_SIZE, RecordEntry,
-    Result, SHARD_HEADER_SIZE, ShardHeader,
-    checksum::{crc32c, crc32c_slices},
-    encryption,
-    error::IoSnafu,
+    Result, SHARD_HEADER_SIZE, ShardHeader, checksum::crc32c, encryption, error::IoSnafu,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +39,8 @@ pub struct ShardReader<R> {
     block_count: u32,
     limits: ReaderLimits,
     decryption_key: Option<crate::EncryptionKey>,
+    derived_decryption_key: Option<([u8; 16], crate::EncryptionKey)>,
+    expected_encryption: Option<crate::EncryptionAlgorithm>,
     collect_content_fingerprint: bool,
 }
 
@@ -65,7 +64,15 @@ impl<R: Read> ShardReader<R> {
     ) -> Result<Self> {
         let mut header = [0; SHARD_HEADER_SIZE];
         input.read_exact(&mut header).context(IoSnafu)?;
-        ShardHeader::decode(&header)?;
+        let header = ShardHeader::decode(&header)?;
+        let expected_encryption = if header.flags == 1 {
+            if decryption_key.is_none() {
+                return Err(Error::MissingDecryptionKey);
+            }
+            crate::EncryptionAlgorithm::Aes256Gcm
+        } else {
+            crate::EncryptionAlgorithm::None
+        };
         Ok(Self {
             input,
             pending: VecDeque::new(),
@@ -73,6 +80,8 @@ impl<R: Read> ShardReader<R> {
             block_count: 0,
             limits,
             decryption_key,
+            derived_decryption_key: None,
+            expected_encryption: Some(expected_encryption),
             collect_content_fingerprint: true,
         })
     }
@@ -121,6 +130,21 @@ impl<R: Read> ShardReader<R> {
                 }
             })?;
         let header = BlockHeader::decode(&raw_header)?;
+        if self.block_count == u32::MAX {
+            return Err(Error::ResourceLimit {
+                field: "block_count",
+                actual: u64::from(u32::MAX) + 1,
+                limit: u64::from(u32::MAX),
+            });
+        }
+        if self
+            .expected_encryption
+            .is_some_and(|expected| header.encryption != expected)
+        {
+            return Err(Error::InvalidBlockHeader {
+                reason: "block encryption differs from shard header",
+            });
+        }
         check_limit(
             "record_count",
             u64::from(header.record_count),
@@ -157,18 +181,24 @@ impl<R: Read> ShardReader<R> {
                 reason: "raw payload too large for platform",
             })?;
         let (directory, stored) = if header.encryption == crate::EncryptionAlgorithm::None {
-            let mut directory = vec![0; expected_directory];
-            let mut stored = vec![0; stored_size];
+            let body_size =
+                expected_directory
+                    .checked_add(stored_size)
+                    .ok_or(Error::InvalidBlockHeader {
+                        reason: "block body size overflow",
+                    })?;
+            let mut body = vec![0; body_size];
             self.input
-                .read_exact(&mut directory)
+                .read_exact(&mut body)
                 .map_err(map_block_read_error)?;
-            self.input
-                .read_exact(&mut stored)
-                .map_err(map_block_read_error)?;
-            if crc32c_slices(&directory, &stored) != header.payload_crc32c {
+            if crc32c(&body) != header.payload_crc32c {
                 return Err(Error::PayloadChecksumMismatch);
             }
-            (Bytes::from(directory), Bytes::from(stored))
+            let body = Bytes::from(body);
+            (
+                body.slice(..expected_directory),
+                body.slice(expected_directory..),
+            )
         } else {
             let mut body = vec![0; stored_size];
             self.input
@@ -177,13 +207,25 @@ impl<R: Read> ShardReader<R> {
             if crc32c(&body) != header.payload_crc32c {
                 return Err(Error::PayloadChecksumMismatch);
             }
-            let key = self
-                .decryption_key
+            if self
+                .derived_decryption_key
                 .as_ref()
-                .ok_or(Error::MissingDecryptionKey)?;
-            let key = key.derive_for_shard(&header.key_salt);
+                .is_none_or(|(salt, _)| salt != &header.key_salt)
+            {
+                let key = self
+                    .decryption_key
+                    .as_ref()
+                    .ok_or(Error::MissingDecryptionKey)?
+                    .derive_for_shard(&header.key_salt);
+                self.derived_decryption_key = Some((header.key_salt, key));
+            }
+            let key = &self
+                .derived_decryption_key
+                .as_ref()
+                .expect("derived key was initialized")
+                .1;
             encryption::decrypt(
-                &key,
+                key,
                 &encryption::block_nonce(header.nonce_counter),
                 &raw_header[..56],
                 &mut body,
@@ -203,6 +245,7 @@ impl<R: Read> ShardReader<R> {
         let mut offset = 0_usize;
         let (entry_chunks, remainder) = directory.as_chunks::<RECORD_ENTRY_SIZE>();
         debug_assert!(remainder.is_empty());
+        self.pending.reserve(entry_chunks.len());
         for entry_bytes in entry_chunks {
             let entry = RecordEntry::decode(entry_bytes)?;
             let end =
@@ -232,10 +275,7 @@ impl<R: Read> ShardReader<R> {
                 reason: "unreferenced payload bytes",
             });
         }
-        self.block_count = self
-            .block_count
-            .checked_add(1)
-            .expect("block count overflow");
+        self.block_count += 1;
         Ok(true)
     }
 }
@@ -332,6 +372,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_block_count_overflow_before_buffering_records() {
+        let bytes = one_record_shard();
+        let mut reader = ShardReader::new(Cursor::new(bytes)).unwrap();
+        reader.block_count = u32::MAX;
+        assert!(matches!(
+            reader.next_record(),
+            Err(Error::ResourceLimit {
+                field: "block_count",
+                ..
+            })
+        ));
+        assert!(reader.pending.is_empty());
+    }
+
+    #[test]
     fn encrypted_round_trip_hides_directory_and_payload_and_rejects_wrong_key() {
         let key = EncryptionKey::new([0x31; 32]);
         let wrong_key = EncryptionKey::new([0x32; 32]);
@@ -355,10 +410,28 @@ mod tests {
                 .any(|window| window == b"secret-payload")
         );
 
-        let mut missing = ShardReader::new(Cursor::new(bytes.clone())).unwrap();
         assert!(matches!(
-            missing.next_record(),
+            ShardReader::new(Cursor::new(bytes.clone())),
             Err(Error::MissingDecryptionKey)
+        ));
+        let mut inconsistent = bytes.clone();
+        let header_end = SHARD_HEADER_SIZE + BLOCK_HEADER_SIZE;
+        let raw: [u8; BLOCK_HEADER_SIZE] = inconsistent[SHARD_HEADER_SIZE..header_end]
+            .try_into()
+            .unwrap();
+        let mut header = BlockHeader::decode(&raw).unwrap();
+        header.version = 1;
+        header.encryption = crate::EncryptionAlgorithm::None;
+        header.key_salt = [0; 16];
+        header.nonce_counter = 0;
+        inconsistent[SHARD_HEADER_SIZE..header_end].copy_from_slice(&header.encode());
+        let mut inconsistent_reader =
+            ShardReader::new_encrypted(Cursor::new(inconsistent), key.clone()).unwrap();
+        assert!(matches!(
+            inconsistent_reader.next_record(),
+            Err(Error::InvalidBlockHeader {
+                reason: "block encryption differs from shard header"
+            })
         ));
         let mut wrong = ShardReader::new_encrypted(Cursor::new(bytes.clone()), wrong_key).unwrap();
         assert!(matches!(

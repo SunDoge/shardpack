@@ -1,5 +1,13 @@
 # ShardPack CLI
 
+For persistent or multiple storage backends, use the typed TOML
+[configuration](configuration.md):
+
+```bash
+shardpack --config ~/.config/shardpack/config.toml --store training \
+  inspect layout layouts/example.layout.pb
+```
+
 The CLI uses the same OpenDAL-backed object API for local filesystems and S3.
 Object names passed to commands are normalized keys relative to the selected
 backend root, never host filesystem paths.

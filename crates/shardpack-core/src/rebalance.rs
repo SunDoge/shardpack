@@ -6,14 +6,15 @@ use shardpack_format::{
     AsyncShardReader, Blake3Reader, BlockCodec, ContentFingerprint, ShardWriter, WriterOptions,
 };
 use shardpack_manifest::{layout_id, proto};
-use shardpack_storage::{AsyncObjectReader, Error as StorageError, Store};
+use shardpack_storage::{AsyncObjectReader, Error as StorageError, Store, StoreRegistry};
 
 use crate::shuffle::AsyncShuffledSource;
 use crate::{
     EncodedRecord, Error, Materialization, MaterializeOptions, MissingDataPolicy, Result,
     materialize::{
-        completion_fields, manifest_object_key, now_timestamp, proto_fingerprint, publish_layout,
-        shard_meta, shard_object_key, validate_options, verify_uploaded_shard, write_record,
+        completion_fields, estimated_record_bytes, manifest_object_key, now_timestamp,
+        proto_fingerprint, publish_layout, shard_meta, shard_object_key, validate_options,
+        verify_uploaded_shard, write_record,
     },
     validate_rebalance,
 };
@@ -24,7 +25,7 @@ pub trait AsyncSourceReader {
 }
 
 pub struct ShardPackLayoutSource {
-    store: Store,
+    stores: StoreRegistry,
     layout: proto::LayoutManifest,
     next_shard: usize,
     current_meta: Option<proto::ShardMeta>,
@@ -36,8 +37,28 @@ impl ShardPackLayoutSource {
     pub fn new(store: Store, layout: proto::LayoutManifest) -> Result<Self> {
         shardpack_manifest::validate_layout(&layout)
             .map_err(|source| Error::Manifest { source })?;
+        let mut stores = StoreRegistry::new();
+        for shard in &layout.shards {
+            let store_id = &shardpack_manifest::object_location(shard).store_id;
+            if !stores.contains(store_id) {
+                stores
+                    .insert(store_id, store.clone())
+                    .map_err(|source| Error::Storage { source })?;
+            }
+        }
+        Self::new_with_registry(stores, layout)
+    }
+
+    pub fn new_with_registry(stores: StoreRegistry, layout: proto::LayoutManifest) -> Result<Self> {
+        shardpack_manifest::validate_layout(&layout)
+            .map_err(|source| Error::Manifest { source })?;
+        for shard in &layout.shards {
+            stores
+                .get(&shardpack_manifest::object_location(shard).store_id)
+                .map_err(|source| Error::Storage { source })?;
+        }
         Ok(Self {
-            store,
+            stores,
             layout,
             next_shard: 0,
             current_meta: None,
@@ -80,7 +101,7 @@ impl ShardPackLayoutSource {
             || reader.input_ref().digest().as_slice() != meta.shard_id
         {
             return Err(Error::ObjectIdentityMismatch {
-                key: meta.object_uri.clone(),
+                key: shardpack_manifest::object_location(meta).object_key.clone(),
             });
         }
         Ok(())
@@ -111,9 +132,12 @@ impl AsyncSourceReader for ShardPackLayoutSource {
                 return Ok(None);
             };
             self.next_shard += 1;
+            let location = shardpack_manifest::object_location(&meta);
             let object = self
-                .store
-                .open_reader(&meta.object_uri)
+                .stores
+                .get(&location.store_id)
+                .map_err(|source| Error::Storage { source })?
+                .open_reader(&location.object_key)
                 .await
                 .map_err(|source| Error::Storage { source })?;
             self.current = Some(
@@ -166,12 +190,41 @@ pub async fn rebalance_layout_transaction(
     staging_directory: &Path,
     options: &MaterializeOptions,
 ) -> Result<RebalanceTransaction> {
+    let mut stores = StoreRegistry::new();
+    for shard in &source_layout.shards {
+        let store_id = &shardpack_manifest::object_location(shard).store_id;
+        if !stores.contains(store_id) {
+            stores
+                .insert(store_id, store.clone())
+                .map_err(|source| Error::Storage { source })?;
+        }
+    }
+    rebalance_layout_transaction_with_registry(
+        &stores,
+        store,
+        catalog,
+        source_layout,
+        staging_directory,
+        options,
+    )
+    .await
+}
+
+pub async fn rebalance_layout_transaction_with_registry(
+    source_stores: &StoreRegistry,
+    target_store: &Store,
+    catalog: &Catalog,
+    source_layout: &proto::LayoutManifest,
+    staging_directory: &Path,
+    options: &MaterializeOptions,
+) -> Result<RebalanceTransaction> {
     let lease = catalog
         .acquire_barrier(new_owner_id(), "rebalance-transaction")
         .await
         .map_err(|source| Error::Catalog { source })?;
     let operation = rebalance_layout_transaction_guarded(
-        store,
+        source_stores,
+        target_store,
         catalog,
         &lease,
         source_layout,
@@ -196,7 +249,8 @@ pub async fn rebalance_layout_transaction(
 }
 
 async fn rebalance_layout_transaction_guarded(
-    store: &Store,
+    source_stores: &StoreRegistry,
+    target_store: &Store,
     catalog: &Catalog,
     lease: &BarrierLease,
     source_layout: &proto::LayoutManifest,
@@ -233,7 +287,8 @@ async fn rebalance_layout_transaction_guarded(
         .map_or(MissingDataPolicy::Fail, |stats| MissingDataPolicy::Skip {
             skipped_records: stats.skipped_records,
         });
-    let mut source = ShardPackLayoutSource::new(store.clone(), source_layout.clone())?;
+    let mut source =
+        ShardPackLayoutSource::new_with_registry(source_stores.clone(), source_layout.clone())?;
     if let Some(source_encryption) = &source_layout.encryption {
         let target_encryption = effective.encryption.as_ref().ok_or(Error::InvalidOption {
             field: "encryption",
@@ -251,7 +306,7 @@ async fn rebalance_layout_transaction_guarded(
     let materialization = materialize_layout_async_inner(
         &mut source,
         snapshot_id,
-        store,
+        target_store,
         staging_directory,
         &effective,
         Some(expected),
@@ -321,34 +376,51 @@ async fn materialize_layout_async_inner<S: AsyncSourceReader + Send>(
                 ShardWriter::new(staging.as_file_mut(), writer_options)
             }
             .map_err(|source| Error::Format { source })?;
-            let mut logical_bytes = 0_u64;
+            let mut estimated_bytes = 0_u64;
             let mut records = 0_u64;
             loop {
                 let Some(record) = pending.take() else { break };
-                let size = record.payload.len() as u64;
-                if records > 0 && logical_bytes.saturating_add(size) > options.target_shard_bytes {
+                let size = estimated_record_bytes(record.payload.len())?;
+                let next_estimated_bytes =
+                    estimated_bytes
+                        .checked_add(size)
+                        .ok_or(Error::InvalidOption {
+                            field: "target_shard_bytes",
+                            reason: "estimated shard byte size overflow",
+                        })?;
+                if records > 0 && next_estimated_bytes > options.target_shard_bytes {
                     pending = Some(record);
                     break;
                 }
                 write_record(&mut writer, &record)?;
-                logical_bytes = logical_bytes.saturating_add(size);
-                records += 1;
+                estimated_bytes = next_estimated_bytes;
+                records = records.checked_add(1).ok_or(Error::InvalidOption {
+                    field: "target_shard_bytes",
+                    reason: "shard record count overflow",
+                })?;
                 pending = source.next_record().await?;
             }
             let (_, summary) = writer.finish().map_err(|source| Error::Format { source })?;
             summary
         };
         let key = shard_object_key(&options.object_prefix, &summary.shard_id);
-        match store.write_file_immutable(&key, staging.path()).await {
-            Ok(()) | Err(StorageError::AlreadyExists { .. }) => {}
+        let verify_destination = match store.publish_tempfile_immutable(&key, staging).await {
+            Ok(shardpack_storage::TempfilePublication::AtomicFilesystem) => false,
+            Ok(shardpack_storage::TempfilePublication::Streamed)
+            | Err(StorageError::AlreadyExists { .. }) => true,
             Err(source) => return Err(Error::Storage { source }),
+        };
+        if verify_destination {
+            verify_uploaded_shard(store, &key, &summary).await?;
         }
-        verify_uploaded_shard(store, &key, &summary).await?;
         total_fingerprint.merge(&summary.content_fingerprint);
         total_bytes = total_bytes
             .checked_add(summary.byte_size)
-            .expect("layout size overflow");
-        shards.push(shard_meta(&key, &summary));
+            .ok_or(Error::InvalidOption {
+                field: "target_shard_bytes",
+                reason: "aggregate layout byte size overflow",
+            })?;
+        shards.push(shard_meta(&options.store_id, &key, &summary));
     }
     if let Some(expected) = expected {
         validate_rebalance(expected, total_fingerprint)?;
@@ -471,7 +543,7 @@ mod tests {
             &store,
             staging.path(),
             &MaterializeOptions {
-                target_shard_bytes: 20,
+                target_shard_bytes: 68,
                 target_block_bytes: 10,
                 builder_version: "source".into(),
                 ..Default::default()
@@ -490,7 +562,7 @@ mod tests {
             &source_layout,
             staging.path(),
             &MaterializeOptions {
-                target_shard_bytes: 100,
+                target_shard_bytes: 204,
                 target_block_bytes: 100,
                 block_codec: BlockCodec::Zstd,
                 builder_version: "rebalance".into(),

@@ -14,7 +14,8 @@ mod shuffle;
 mod snapshot;
 pub use import::{
     ImportOptions, ImportedDataset, import_encrypted_shardpack, import_shardpack,
-    import_shardpack_coordinated,
+    import_shardpack_coordinated, import_shardpack_coordinated_with_registry,
+    import_shardpack_from_registry,
 };
 pub use materialize::{
     Materialization, MaterializeEncryption, MaterializeOptions, MissingDataPolicy,
@@ -26,11 +27,11 @@ pub use materialize::{
 pub use mirror::{MirrorResult, mirror_dataset};
 pub use rebalance::{
     AsyncSourceReader, RebalanceTransaction, ShardPackLayoutSource, materialize_layout_async,
-    rebalance_layout_transaction,
+    rebalance_layout_transaction, rebalance_layout_transaction_with_registry,
 };
 pub use snapshot::{
-    ResolvedDataset, layout_manifest_key, load_layout, load_snapshot, publish_snapshot,
-    resolve_dataset, snapshot_manifest_key,
+    ResolvedDataset, layout_manifest_key, load_layout, load_layout_with_limit, load_snapshot,
+    load_snapshot_with_limit, publish_snapshot, resolve_dataset, snapshot_manifest_key,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,6 +92,10 @@ pub enum Error {
     DecryptionKeyMismatch,
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// Default upper bound for authoritative protobuf manifests loaded into
+/// memory. Call the explicit `*_with_limit` APIs for unusually large layouts.
+pub const DEFAULT_MAX_MANIFEST_BYTES: usize = 512 * 1024 * 1024;
 
 pub struct ShardPackSource<R> {
     reader: ShardReader<R>,

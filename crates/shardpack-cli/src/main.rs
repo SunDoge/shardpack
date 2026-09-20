@@ -3,17 +3,19 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 use shardpack_catalog::Catalog;
 use shardpack_core::{
-    ImportOptions, MaterializeOptions, import_shardpack_coordinated, load_layout, load_snapshot,
-    rebalance_layout_transaction,
+    ImportOptions, MaterializeOptions, import_shardpack_coordinated_with_registry, load_layout,
+    load_snapshot, rebalance_layout_transaction_with_registry,
 };
 use shardpack_format::BlockCodec;
 use shardpack_manifest::{LayoutId, SnapshotId, proto};
 use shardpack_runtime::{DatasetReader, IncompleteLayoutPolicy};
-use shardpack_storage::{S3Options, Store};
+use shardpack_storage::{S3Options, Store, StoreRegistry};
 use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
 enum Error {
+    #[snafu(display("configuration failed: {source}"))]
+    Config { source: shardpack_config::Error },
     #[snafu(display("storage initialization failed: {source}"))]
     Storage { source: shardpack_storage::Error },
     #[snafu(display("ShardPack operation failed: {source}"))]
@@ -46,6 +48,14 @@ type Result<T, E = Error> = std::result::Result<T, E>;
     about = "Operate immutable ShardPack datasets"
 )]
 struct Cli {
+    /// TOML configuration file. Defaults to SHARDPACK_CONFIG or the XDG path.
+    #[arg(long, global = true, env = "SHARDPACK_CONFIG")]
+    config: Option<PathBuf>,
+
+    /// Named store from the configuration file.
+    #[arg(long, global = true)]
+    store: Option<String>,
+
     /// Local OpenDAL filesystem root. Used when --s3-bucket is absent.
     #[arg(long, global = true, conflicts_with = "s3_bucket")]
     root: Option<PathBuf>,
@@ -88,8 +98,8 @@ struct Cli {
     s3_write_concurrency: usize,
 
     /// Prefix for mutable catalog records.
-    #[arg(long, global = true, default_value = "catalog")]
-    catalog_prefix: String,
+    #[arg(long, global = true)]
+    catalog_prefix: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -130,6 +140,7 @@ enum Command {
         target_block_bytes: u64,
         #[arg(long, value_enum, default_value_t = Codec::None)]
         block_codec: Codec,
+        /// Object keys in the selected store, or STORE_ID::OBJECT_KEY.
         #[arg(required = true)]
         shards: Vec<String>,
     },
@@ -219,12 +230,16 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    let store = open_store(&cli)?;
-    let catalog = Catalog::new(store.clone(), cli.catalog_prefix)
-        .map_err(|source| Error::Catalog { source })?;
+    let storage = open_storage(&cli)?;
+    let store = storage.selected_store.clone();
+    let catalog = Catalog::new(
+        storage.catalog_store.clone(),
+        storage.catalog_prefix.clone(),
+    )
+    .map_err(|source| Error::Catalog { source })?;
     match cli.command {
         Command::Inspect { kind, key } => inspect(&store, kind, &key).await,
-        Command::Verify { layout_key } => verify(&store, &layout_key).await,
+        Command::Verify { layout_key } => verify(&storage.registry, &store, &layout_key).await,
         Command::Import {
             dataset_id,
             codec_name,
@@ -241,8 +256,9 @@ async fn run(cli: Cli) -> Result<()> {
         } => {
             let schema_id = hex::decode(schema_id).map_err(|source| Error::Hex { source })?;
             let embedded_schema = read_optional(embedded_schema_file.as_deref()).await?;
-            let imported = import_shardpack_coordinated(
+            let imported = import_shardpack_coordinated_with_registry(
                 &store,
+                &storage.registry,
                 &catalog,
                 &ImportOptions {
                     dataset_id,
@@ -253,7 +269,10 @@ async fn run(cli: Cli) -> Result<()> {
                         schema_id,
                         embedded_schema,
                     },
-                    shard_object_uris: shards,
+                    shard_locations: shards
+                        .into_iter()
+                        .map(|value| shard_location_arg(&value, &storage.selected_store_id))
+                        .collect(),
                     snapshot_prefix,
                     layout_prefix,
                     layout_recipe: proto::LayoutRecipe {
@@ -287,6 +306,7 @@ async fn run(cli: Cli) -> Result<()> {
                 .await
                 .map_err(|source| Error::Core { source })?;
             let options = MaterializeOptions {
+                store_id: storage.selected_store_id.clone(),
                 target_shard_bytes,
                 target_block_bytes,
                 block_codec: block_codec.into(),
@@ -295,7 +315,8 @@ async fn run(cli: Cli) -> Result<()> {
                 layout_prefix,
                 ..MaterializeOptions::default()
             };
-            let result = rebalance_layout_transaction(
+            let result = rebalance_layout_transaction_with_registry(
+                &storage.registry,
                 &store,
                 &catalog,
                 &source,
@@ -365,13 +386,58 @@ async fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn open_store(cli: &Cli) -> Result<Store> {
-    match &cli.s3_bucket {
+struct StorageContext {
+    selected_store_id: String,
+    selected_store: Store,
+    catalog_store: Store,
+    catalog_prefix: String,
+    registry: StoreRegistry,
+}
+
+fn open_storage(cli: &Cli) -> Result<StorageContext> {
+    let config_path = cli.config.clone().or_else(|| {
+        (cli.root.is_none() && cli.s3_bucket.is_none())
+            .then(shardpack_config::ShardPackConfig::discover_path)
+            .flatten()
+    });
+    if let Some(config_path) = config_path {
+        let config = shardpack_config::ShardPackConfig::load(&config_path)
+            .map_err(|source| Error::Config { source })?;
+        let selected_store_id = config
+            .selected_store_id(cli.store.as_deref())
+            .map_err(|source| Error::Config { source })?
+            .to_owned();
+        let catalog_store_id = config
+            .catalog_store_id()
+            .map_err(|source| Error::Config { source })?
+            .to_owned();
+        let registry = config
+            .build_registry()
+            .map_err(|source| Error::Config { source })?;
+        let selected_store = registry
+            .get(&selected_store_id)
+            .map_err(|source| Error::Storage { source })?
+            .clone();
+        let catalog_store = registry
+            .get(&catalog_store_id)
+            .map_err(|source| Error::Storage { source })?
+            .clone();
+        return Ok(StorageContext {
+            selected_store_id,
+            selected_store,
+            catalog_store,
+            catalog_prefix: cli.catalog_prefix.clone().unwrap_or(config.catalog.prefix),
+            registry,
+        });
+    }
+
+    let selected_store = match &cli.s3_bucket {
         Some(bucket) => Store::s3(&S3Options {
             bucket: bucket.clone(),
             root: cli.s3_root.clone(),
             endpoint: cli.s3_endpoint.clone(),
             region: cli.s3_region.clone(),
+            profile: None,
             access_key_id: cli.s3_access_key_id.clone(),
             secret_access_key: cli.s3_secret_access_key.clone(),
             session_token: cli.s3_session_token.clone(),
@@ -380,7 +446,30 @@ fn open_store(cli: &Cli) -> Result<Store> {
         }),
         None => Store::filesystem(cli.root.as_deref().unwrap_or_else(|| Path::new("."))),
     }
-    .map_err(|source| Error::Storage { source })
+    .map_err(|source| Error::Storage { source })?;
+    let selected_store_id = cli.store.clone().unwrap_or_else(|| "default".into());
+    let mut registry = StoreRegistry::new();
+    registry
+        .insert(&selected_store_id, selected_store.clone())
+        .map_err(|source| Error::Storage { source })?;
+    Ok(StorageContext {
+        selected_store_id,
+        selected_store: selected_store.clone(),
+        catalog_store: selected_store,
+        catalog_prefix: cli
+            .catalog_prefix
+            .clone()
+            .unwrap_or_else(|| "catalog".into()),
+        registry,
+    })
+}
+
+fn shard_location_arg(value: &str, default_store_id: &str) -> proto::ObjectLocation {
+    let (store_id, object_key) = value.split_once("::").unwrap_or((default_store_id, value));
+    proto::ObjectLocation {
+        store_id: store_id.to_owned(),
+        object_key: object_key.to_owned(),
+    }
 }
 
 async fn inspect(store: &Store, kind: ManifestKind, key: &str) -> Result<()> {
@@ -428,15 +517,15 @@ async fn inspect(store: &Store, kind: ManifestKind, key: &str) -> Result<()> {
     Ok(())
 }
 
-async fn verify(store: &Store, layout_key: &str) -> Result<()> {
+async fn verify(registry: &StoreRegistry, store: &Store, layout_key: &str) -> Result<()> {
     let layout = load_layout(store, layout_key)
         .await
         .map_err(|source| Error::Core { source })?;
     let expected = layout.total_records;
     let shard_count = layout.shards.len();
     let total_bytes = layout.total_bytes;
-    let mut reader = DatasetReader::new_with_incomplete_policy(
-        store.clone(),
+    let mut reader = DatasetReader::new_with_registry_and_incomplete_policy(
+        registry.clone(),
         layout,
         IncompleteLayoutPolicy::Allow,
     )
@@ -549,6 +638,8 @@ const fn timestamp(seconds: i64) -> prost_types::Timestamp {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use clap::Parser;
     use shardpack_format::{ShardWriter, WriterOptions};
 
@@ -626,8 +717,84 @@ mod tests {
         assert_eq!(catalog.pins().await.unwrap().len(), 1);
     }
 
+    #[tokio::test]
+    async fn config_selects_data_and_catalog_stores_independently() {
+        let directory = tempfile::tempdir().unwrap();
+        let data_root = directory.path().join("data");
+        let catalog_root = directory.path().join("control");
+        std::fs::create_dir_all(data_root.join("incoming")).unwrap();
+        std::fs::create_dir_all(&catalog_root).unwrap();
+        let mut writer = ShardWriter::new(Vec::new(), WriterOptions::default()).unwrap();
+        writer.add_record([3; 16], 0, b"configured").unwrap();
+        let (bytes, _) = writer.finish().unwrap();
+        std::fs::write(data_root.join("incoming/configured.spk"), bytes).unwrap();
+        let config_path = directory.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+default_store = "data"
+[catalog]
+store = "control"
+prefix = "catalog"
+[stores.data]
+type = "filesystem"
+root = "{}"
+[stores.control]
+type = "filesystem"
+root = "{}"
+"#,
+                data_root.display(),
+                catalog_root.display()
+            ),
+        )
+        .unwrap();
+
+        run(config_cli(
+            config_path.clone(),
+            Command::Import {
+                dataset_id: "configured-dataset".into(),
+                codec_name: "opaque-test".into(),
+                codec_version: 1,
+                schema_id: "00".repeat(32),
+                embedded_schema_file: None,
+                description: None,
+                snapshot_prefix: "snapshots".into(),
+                layout_prefix: "layouts".into(),
+                target_shard_bytes: 1024,
+                target_block_bytes: 1024,
+                block_codec: Codec::None,
+                shards: vec!["incoming/configured.spk".into()],
+            },
+        ))
+        .await
+        .unwrap();
+
+        let data = shardpack_storage::Store::filesystem(&data_root).unwrap();
+        let layouts = data.list_keys("layouts/").await.unwrap();
+        assert_eq!(layouts.len(), 1);
+        run(config_cli(
+            config_path,
+            Command::Verify {
+                layout_key: layouts[0].clone(),
+            },
+        ))
+        .await
+        .unwrap();
+        let catalog_store = shardpack_storage::Store::filesystem(&catalog_root).unwrap();
+        assert!(
+            catalog_store
+                .list_keys("catalog/")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     fn local_cli(root: &std::path::Path, command: Command) -> Cli {
         Cli {
+            config: None,
+            store: None,
             root: Some(root.to_owned()),
             s3_bucket: None,
             s3_root: None,
@@ -638,7 +805,26 @@ mod tests {
             s3_session_token: None,
             s3_write_chunk_bytes: 16 * 1024 * 1024,
             s3_write_concurrency: 8,
-            catalog_prefix: "catalog".into(),
+            catalog_prefix: Some("catalog".into()),
+            command,
+        }
+    }
+
+    fn config_cli(config: PathBuf, command: Command) -> Cli {
+        Cli {
+            config: Some(config),
+            store: None,
+            root: None,
+            s3_bucket: None,
+            s3_root: None,
+            s3_endpoint: None,
+            s3_region: None,
+            s3_access_key_id: None,
+            s3_secret_access_key: None,
+            s3_session_token: None,
+            s3_write_chunk_bytes: 16 * 1024 * 1024,
+            s3_write_concurrency: 8,
+            catalog_prefix: None,
             command,
         }
     }
