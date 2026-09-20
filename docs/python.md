@@ -1,7 +1,7 @@
 # Python SDK
 
 The Python package is a mixed Python/Rust project managed by `uv` and `maturin`.
-It builds one abi3 extension for CPython 3.10 and newer.
+It builds one abi3 extension for CPython 3.11 and newer.
 
 ```bash
 cd python
@@ -17,9 +17,35 @@ mise run test:python
 mise run build:python
 ```
 
-The wheel uses abi3 for CPython 3.10+ and Zig to retain a manylinux 2.17 baseline.
+The wheel uses abi3 for CPython 3.11+ and Zig to retain a manylinux 2.17 baseline.
 The maturin source distribution includes the Rust path dependencies and has been
 rebuilt and tested in an isolated uv environment.
+
+`DatasetWriter` accepts packed CPU buffers without linking against the NumPy C
+ABI. One batch consists of a contiguous `uint8` payload arena, `uint64` offsets,
+`uint8[B, 16]` sample IDs, and optional `uint32` flags:
+
+```python
+import numpy as np
+from shardpack import DatasetWriter
+
+payloads = [b"first encoded record", b"second encoded record"]
+data = np.frombuffer(b"".join(payloads), dtype=np.uint8)
+offsets = np.array([0, len(payloads[0]), sum(map(len, payloads))], dtype=np.uint64)
+sample_ids = np.zeros((2, 16), dtype=np.uint8)
+
+writer = DatasetWriter(
+    config="~/.config/shardpack/config.toml",
+    snapshot_id=bytes.fromhex("00" * 32),
+    staging_dir="/local-nvme/shardpack-staging",
+)
+writer.write_batch(data, offsets, sample_ids)
+layout_key = writer.finish()
+```
+
+The native call copies the arena before returning, so callers may immediately
+reuse writable NumPy buffers. Admission is bounded by batch count, records, and
+bytes; waiting for channel capacity releases the GIL.
 
 `Dataset` loads the authoritative protobuf layout through a named store in the
 normal ShardPack TOML configuration. Shards referenced by that layout may reside

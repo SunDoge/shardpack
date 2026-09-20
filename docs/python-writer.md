@@ -35,11 +35,25 @@ boundaries, block nonces, BLAKE3 identity, and reproducibility independent of ta
 scheduling. Uploading completed shards overlaps network I/O with construction of
 the next shard and is the first useful concurrency boundary.
 
-Every queue is bounded by both records and bytes. `write_batch`, rather than a
-per-record call, amortizes PyO3 and GIL transitions. Once Rust owns the batch, the
-call releases the GIL while waiting for channel capacity. Payloads become
-Rust-owned `Bytes` before a worker can access them; workers never retain borrowed
-Python memory.
+The first public ingestion API is a packed CPU-buffer batch:
+
+```python
+writer.write_batch(payload_data, offsets, sample_ids, flags=None)
+```
+
+`payload_data` is contiguous `uint8[N]`, `offsets` is `uint64[B + 1]`, sample IDs
+are `uint8[B, 16]` (or the equivalent flat buffer), and optional flags are
+`uint32[B]`. NumPy arrays and other compatible Python buffer exporters work
+without a NumPy ABI dependency. Object arrays and lists of per-record arrays are
+deliberately unsupported.
+
+`write_batch`, rather than a per-record call, amortizes PyO3 and GIL transitions.
+Python memory is copied once into one Rust-owned arena; records are zero-copy
+`Bytes` slices of that arena until the packer copies them into the final block.
+The call releases the GIL while waiting for bounded channel space, and workers
+never retain borrowed Python memory. `queue_batches`, `max_batch_bytes`, and
+`max_batch_records` bound ingestion memory; the active block adds a small amount
+beyond it.
 
 ## Public configuration
 
@@ -66,8 +80,9 @@ struct WriterEncryption {
 }
 
 struct PythonWriterLimits {
-    ingest_max_records: usize,
-    ingest_max_bytes: usize,
+    queue_batches: usize,
+    max_batch_records: usize,
+    max_batch_bytes: usize,
     completed_shard_queue_bytes: u64,
     upload_concurrency: usize,
     staging_max_bytes: u64,
@@ -104,6 +119,9 @@ never shared between processes. The MVP supports one writer process. Future
 multi-process materialization should give each process a deterministic input
 partition and independent shard ownership; workers publish fragment manifests and
 only a coordinator validates and publishes the final layout.
+
+The buffer API requires CPython 3.11 because PyO3 exposes the stable-ABI buffer
+interface from that version onward. Wheels therefore target `abi3-py311`.
 
 ## Commit and failure behavior
 

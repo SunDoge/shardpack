@@ -1,20 +1,387 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex, mpsc},
+    thread,
+};
 
 use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use bytes::Bytes;
 use prost::Message;
 use pyo3::{
+    buffer::PyBuffer,
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
-    types::{PyBytes, PyDict},
+    types::{PyAny, PyBytes, PyDict},
 };
 use shardpack_cache::{CacheMetrics, LocalCache};
+use shardpack_core::{
+    EncodedRecord as CoreEncodedRecord, MaterializeEncryption, MaterializeOptions,
+    Result as CoreResult, SourceReader, materialize_layout,
+};
+use shardpack_format::BlockCodec;
 use shardpack_manifest::proto;
 use shardpack_runtime::{
     DatasetReader, DistributedContext, EncodedRecord, LoaderCheckpoint, NetworkPrefetch,
     NodeAffinity, RuntimeMetrics, ShuffleLimits, ShufflePool, ShufflePoolCheckpoint,
 };
 use shardpack_storage::StoreRegistry;
+
+const DEFAULT_WRITER_MAX_BATCH_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_WRITER_MAX_BATCH_RECORDS: usize = 1_000_000;
+
+struct BatchSource {
+    receiver: mpsc::Receiver<Vec<CoreEncodedRecord>>,
+    current: std::vec::IntoIter<CoreEncodedRecord>,
+}
+
+impl SourceReader for BatchSource {
+    fn next_record(&mut self) -> CoreResult<Option<CoreEncodedRecord>> {
+        loop {
+            if let Some(record) = self.current.next() {
+                return Ok(Some(record));
+            }
+            match self.receiver.recv() {
+                Ok(batch) => self.current = batch.into_iter(),
+                Err(_) => return Ok(None),
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+enum WriterOutcome {
+    Success(String),
+    Failure(String),
+}
+
+struct WriterState {
+    sender: Option<mpsc::SyncSender<Vec<CoreEncodedRecord>>>,
+    worker: Option<thread::JoinHandle<WriterOutcome>>,
+    outcome: Option<WriterOutcome>,
+}
+
+#[pyclass(module = "shardpack._native", name = "DatasetWriter")]
+struct PyDatasetWriter {
+    process_id: u32,
+    max_batch_bytes: usize,
+    max_batch_records: usize,
+    admission: Mutex<()>,
+    state: Mutex<WriterState>,
+}
+
+impl PyDatasetWriter {
+    fn check_process(&self) -> PyResult<()> {
+        if std::process::id() != self.process_id {
+            return Err(PyRuntimeError::new_err(
+                "DatasetWriter cannot be used after fork; create a new writer in the child",
+            ));
+        }
+        Ok(())
+    }
+
+    fn copy_u8_buffer(
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+        name: &str,
+    ) -> PyResult<(Vec<u8>, usize, Vec<usize>)> {
+        let buffer = PyBuffer::<u8>::get(value)
+            .map_err(|error| PyValueError::new_err(format!("{name}: {error}")))?;
+        if !buffer.is_c_contiguous() {
+            return Err(PyValueError::new_err(format!(
+                "{name} must be C-contiguous"
+            )));
+        }
+        let dimensions = buffer.dimensions();
+        let shape = buffer.shape().to_vec();
+        Ok((buffer.to_vec(py)?, dimensions, shape))
+    }
+
+    fn copy_u64_buffer(py: Python<'_>, value: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
+        let buffer = PyBuffer::<u64>::get(value)
+            .map_err(|error| PyValueError::new_err(format!("{name}: {error}")))?;
+        if buffer.dimensions() != 1 || !buffer.is_c_contiguous() {
+            return Err(PyValueError::new_err(format!(
+                "{name} must be a one-dimensional C-contiguous uint64 buffer"
+            )));
+        }
+        buffer.to_vec(py)
+    }
+
+    fn copy_u32_buffer(py: Python<'_>, value: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u32>> {
+        let buffer = PyBuffer::<u32>::get(value)
+            .map_err(|error| PyValueError::new_err(format!("{name}: {error}")))?;
+        if buffer.dimensions() != 1 || !buffer.is_c_contiguous() {
+            return Err(PyValueError::new_err(format!(
+                "{name} must be a one-dimensional C-contiguous uint32 buffer"
+            )));
+        }
+        buffer.to_vec(py)
+    }
+}
+
+#[pymethods]
+impl PyDatasetWriter {
+    #[new]
+    #[pyo3(signature = (config, snapshot_id, staging_dir, *, store=None, target_shard_bytes=1_073_741_824, target_block_bytes=16_777_216, block_codec="none", zstd_level=1, object_prefix="shards", layout_prefix="layouts", queue_batches=2, max_batch_records=DEFAULT_WRITER_MAX_BATCH_RECORDS, max_batch_bytes=DEFAULT_WRITER_MAX_BATCH_BYTES, encryption_key_id=None, encryption_key=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        config: PathBuf,
+        snapshot_id: &Bound<'_, PyBytes>,
+        staging_dir: PathBuf,
+        store: Option<String>,
+        target_shard_bytes: u64,
+        target_block_bytes: usize,
+        block_codec: &str,
+        zstd_level: i32,
+        object_prefix: &str,
+        layout_prefix: &str,
+        queue_batches: usize,
+        max_batch_records: usize,
+        max_batch_bytes: usize,
+        encryption_key_id: Option<String>,
+        encryption_key: Option<&Bound<'_, PyBytes>>,
+    ) -> PyResult<Self> {
+        if queue_batches == 0 {
+            return Err(PyValueError::new_err(
+                "queue_batches must be greater than zero",
+            ));
+        }
+        if max_batch_bytes == 0 {
+            return Err(PyValueError::new_err(
+                "max_batch_bytes must be greater than zero",
+            ));
+        }
+        if max_batch_records == 0 {
+            return Err(PyValueError::new_err(
+                "max_batch_records must be greater than zero",
+            ));
+        }
+        let snapshot_id: [u8; 32] = snapshot_id
+            .as_bytes()
+            .try_into()
+            .map_err(|_| PyValueError::new_err("snapshot_id must contain exactly 32 bytes"))?;
+        let block_codec = match block_codec {
+            "none" => BlockCodec::None,
+            "zstd" => BlockCodec::Zstd,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "block_codec must be 'none' or 'zstd'",
+                ));
+            }
+        };
+        let encryption = parse_encryption(encryption_key_id, encryption_key)?
+            .map(|(key_id, key)| MaterializeEncryption { key_id, key });
+        std::fs::create_dir_all(&staging_dir).map_err(runtime_error)?;
+        let config = shardpack_config::ShardPackConfig::load(&config).map_err(runtime_error)?;
+        let store_id = config
+            .selected_store_id(store.as_deref())
+            .map_err(runtime_error)?
+            .to_owned();
+        let stores = config.build_registry().map_err(runtime_error)?;
+        let store = stores.get(&store_id).map_err(runtime_error)?.clone();
+        let options = MaterializeOptions {
+            store_id,
+            target_shard_bytes,
+            target_block_bytes,
+            block_codec,
+            zstd_level,
+            object_prefix: object_prefix.to_owned(),
+            layout_prefix: layout_prefix.to_owned(),
+            encryption,
+            ..Default::default()
+        };
+        let (sender, receiver) = mpsc::sync_channel(queue_batches);
+        let worker = thread::Builder::new()
+            .name("shardpack-python-writer".into())
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => return WriterOutcome::Failure(error.to_string()),
+                };
+                let mut source = BatchSource {
+                    receiver,
+                    current: Vec::new().into_iter(),
+                };
+                match runtime.block_on(materialize_layout(
+                    &mut source,
+                    snapshot_id,
+                    &store,
+                    &staging_dir,
+                    &options,
+                )) {
+                    Ok(materialization) => {
+                        WriterOutcome::Success(materialization.layout_object_key)
+                    }
+                    Err(error) => WriterOutcome::Failure(error.to_string()),
+                }
+            })
+            .map_err(runtime_error)?;
+        Ok(Self {
+            process_id: std::process::id(),
+            max_batch_bytes,
+            max_batch_records,
+            admission: Mutex::new(()),
+            state: Mutex::new(WriterState {
+                sender: Some(sender),
+                worker: Some(worker),
+                outcome: None,
+            }),
+        })
+    }
+
+    #[pyo3(signature = (payload_data, offsets, sample_ids, flags=None))]
+    fn write_batch(
+        &self,
+        py: Python<'_>,
+        payload_data: &Bound<'_, PyAny>,
+        offsets: &Bound<'_, PyAny>,
+        sample_ids: &Bound<'_, PyAny>,
+        flags: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<usize> {
+        self.check_process()?;
+        let (payload_data, payload_dimensions, _) =
+            Self::copy_u8_buffer(py, payload_data, "payload_data")?;
+        if payload_dimensions != 1 {
+            return Err(PyValueError::new_err(
+                "payload_data must be a one-dimensional uint8 buffer",
+            ));
+        }
+        if payload_data.len() > self.max_batch_bytes {
+            return Err(PyValueError::new_err(format!(
+                "payload_data exceeds max_batch_bytes ({})",
+                self.max_batch_bytes
+            )));
+        }
+        let offsets = Self::copy_u64_buffer(py, offsets, "offsets")?;
+        if offsets.is_empty() || offsets[0] != 0 {
+            return Err(PyValueError::new_err(
+                "offsets must contain at least one element and start at zero",
+            ));
+        }
+        let record_count = offsets.len() - 1;
+        if record_count > self.max_batch_records {
+            return Err(PyValueError::new_err(format!(
+                "batch exceeds max_batch_records ({})",
+                self.max_batch_records
+            )));
+        }
+        let (sample_ids, sample_id_dimensions, sample_id_shape) =
+            Self::copy_u8_buffer(py, sample_ids, "sample_ids")?;
+        let valid_sample_id_shape = match sample_id_dimensions {
+            1 => sample_ids.len() == record_count.saturating_mul(16),
+            2 => sample_id_shape.as_slice() == [record_count, 16],
+            _ => false,
+        };
+        if !valid_sample_id_shape {
+            return Err(PyValueError::new_err(
+                "sample_ids must have shape (record_count, 16) or be a flat buffer of that size",
+            ));
+        }
+        let flags = match flags {
+            Some(flags) => Self::copy_u32_buffer(py, flags, "flags")?,
+            None => vec![0; record_count],
+        };
+        if flags.len() != record_count {
+            return Err(PyValueError::new_err(
+                "flags length must equal record_count",
+            ));
+        }
+        let payload_data = Bytes::from(payload_data);
+        let mut records = Vec::with_capacity(record_count);
+        for index in 0..record_count {
+            let start = usize::try_from(offsets[index])
+                .map_err(|_| PyValueError::new_err("offset overflows usize"))?;
+            let end = usize::try_from(offsets[index + 1])
+                .map_err(|_| PyValueError::new_err("offset overflows usize"))?;
+            if start > end || end > payload_data.len() {
+                return Err(PyValueError::new_err(
+                    "offsets must be monotonic and within payload_data",
+                ));
+            }
+            let id_start = index * 16;
+            let sample_id = sample_ids[id_start..id_start + 16]
+                .try_into()
+                .expect("validated sample ID buffer length");
+            records.push(CoreEncodedRecord {
+                sample_id,
+                flags: flags[index],
+                payload: payload_data.slice(start..end),
+            });
+        }
+        if offsets.last().copied() != Some(payload_data.len() as u64) {
+            return Err(PyValueError::new_err(
+                "the final offset must equal payload_data length",
+            ));
+        }
+        if records.is_empty() {
+            return Ok(0);
+        }
+        py.detach(|| {
+            let _admission = self.admission.lock().map_err(|_| {
+                PyRuntimeError::new_err("DatasetWriter admission lock was poisoned")
+            })?;
+            let state = self.state.lock().map_err(|_| {
+                PyRuntimeError::new_err("DatasetWriter state was poisoned by another thread")
+            })?;
+            let sender = state
+                .sender
+                .as_ref()
+                .ok_or_else(|| PyRuntimeError::new_err("DatasetWriter is already finished"))?
+                .clone();
+            drop(state);
+            sender
+                .send(records)
+                .map_err(|_| PyRuntimeError::new_err("DatasetWriter worker stopped unexpectedly"))
+        })?;
+        Ok(record_count)
+    }
+
+    fn finish(&self, py: Python<'_>) -> PyResult<String> {
+        self.check_process()?;
+        let outcome = py.detach(|| -> PyResult<WriterOutcome> {
+            let _admission = self.admission.lock().map_err(|_| {
+                PyRuntimeError::new_err("DatasetWriter admission lock was poisoned")
+            })?;
+            let mut state = self.state.lock().map_err(|_| {
+                PyRuntimeError::new_err("DatasetWriter state was poisoned by another thread")
+            })?;
+            if let Some(outcome) = &state.outcome {
+                return Ok(outcome.clone());
+            }
+            state.sender.take();
+            let worker = state.worker.take().ok_or_else(|| {
+                PyRuntimeError::new_err("DatasetWriter finish is already in progress")
+            })?;
+            drop(state);
+            let outcome = worker
+                .join()
+                .unwrap_or_else(|_| WriterOutcome::Failure("DatasetWriter worker panicked".into()));
+            let mut state = self.state.lock().map_err(|_| {
+                PyRuntimeError::new_err("DatasetWriter state was poisoned by another thread")
+            })?;
+            state.outcome = Some(outcome.clone());
+            Ok(outcome)
+        })?;
+        match outcome {
+            WriterOutcome::Success(key) => Ok(key),
+            WriterOutcome::Failure(error) => Err(PyRuntimeError::new_err(error)),
+        }
+    }
+}
+
+impl Drop for PyDatasetWriter {
+    fn drop(&mut self) {
+        if let Ok(state) = self.state.get_mut() {
+            state.sender.take();
+            if let Some(worker) = state.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+}
 
 fn manifest_runtime() -> PyResult<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
@@ -1073,6 +1440,7 @@ fn metrics_dict<'py>(
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDataset>()?;
+    module.add_class::<PyDatasetWriter>()?;
     module.add_class::<PyLoaderCheckpoint>()?;
     module.add_class::<PyRecord>()?;
     module.add_class::<PyRecordLoader>()?;

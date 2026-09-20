@@ -17,6 +17,6 @@ mise run test:python
 mise run build:python
 ```
 
-The release task produces a CPython 3.10+ abi3 wheel with a manylinux 2.17
+The release task produces a CPython 3.11+ abi3 wheel with a manylinux 2.17
 baseline. `uv run maturin sdist --out dist` produces a self-contained source
 distribution containing the required Rust workspace crates.

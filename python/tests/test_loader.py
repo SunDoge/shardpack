@@ -1,10 +1,105 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import shardpack
 
 DATA = Path(__file__).parent / "data"
+
+
+def test_buffer_writer_materializes_numpy_batches(tmp_path: Path) -> None:
+    object_root = tmp_path / "objects"
+    staging = tmp_path / "staging"
+    config = tmp_path / "shardpack.toml"
+    config.write_text(
+        f'''\
+version = 1
+default_store = "local"
+
+[stores.local]
+type = "filesystem"
+root = "{object_root}"
+'''
+    )
+    payloads = [b"alpha", b"", b"charlie-data"]
+    payload_data = np.frombuffer(b"".join(payloads), dtype=np.uint8).copy()
+    offsets = np.array([0, 5, 5, 17], dtype=np.uint64)
+    sample_ids = np.stack([np.full(16, value, dtype=np.uint8) for value in range(len(payloads))])
+    flags = np.array([3, 0, 9], dtype=np.uint32)
+
+    writer = shardpack.DatasetWriter(
+        config,
+        bytes([0x61]) * 32,
+        staging,
+        target_shard_bytes=64,
+        target_block_bytes=32,
+        queue_batches=1,
+    )
+    assert writer.write_batch(payload_data, offsets, sample_ids, flags) == 3
+    payload_data.fill(0)  # Rust owns the admitted batch; later mutation is harmless.
+    assert (
+        writer.write_batch(
+            memoryview(b"delta"),
+            np.array([0, 5], dtype=np.uint64),
+            np.full((1, 16), 7, dtype=np.uint8),
+        )
+        == 1
+    )
+    layout_key = writer.finish()
+    assert writer.finish() == layout_key
+
+    dataset = shardpack.Dataset(config, layout_key)
+    records = list(dataset.records(shuffle_max_records=0, shuffle_max_bytes=0))
+    assert {record.sample_id: (record.flags, record.payload) for record in records} == {
+        bytes([0]) * 16: (3, b"alpha"),
+        bytes([1]) * 16: (0, b""),
+        bytes([2]) * 16: (9, b"charlie-data"),
+        bytes([7]) * 16: (0, b"delta"),
+    }
+
+
+def test_buffer_writer_rejects_invalid_packed_batches(tmp_path: Path) -> None:
+    config = tmp_path / "shardpack.toml"
+    config.write_text(
+        f'''\
+version = 1
+default_store = "local"
+
+[stores.local]
+type = "filesystem"
+root = "{tmp_path / "objects"}"
+'''
+    )
+    writer = shardpack.DatasetWriter(
+        config,
+        bytes([0x62]) * 32,
+        tmp_path / "staging",
+        max_batch_records=1,
+        max_batch_bytes=8,
+    )
+    ids = np.zeros((1, 16), dtype=np.uint8)
+    with pytest.raises(ValueError, match="max_batch_bytes"):
+        writer.write_batch(np.zeros(9, dtype=np.uint8), np.array([0, 9], dtype=np.uint64), ids)
+    with pytest.raises(ValueError, match="C-contiguous"):
+        writer.write_batch(
+            np.arange(8, dtype=np.uint8)[::2], np.array([0, 4], dtype=np.uint64), ids
+        )
+    with pytest.raises(ValueError, match="offsets"):
+        writer.write_batch(np.zeros(4, dtype=np.uint8), np.array([0, 5], dtype=np.uint64), ids)
+    with pytest.raises(ValueError, match="sample_ids"):
+        writer.write_batch(
+            np.zeros(4, dtype=np.uint8),
+            np.array([0, 4], dtype=np.uint64),
+            np.zeros((1, 15), dtype=np.uint8),
+        )
+    with pytest.raises(ValueError, match="max_batch_records"):
+        writer.write_batch(
+            np.zeros(4, dtype=np.uint8),
+            np.array([0, 2, 4], dtype=np.uint64),
+            np.zeros((2, 16), dtype=np.uint8),
+        )
+    writer.finish()
 
 
 @pytest.fixture(scope="module")
