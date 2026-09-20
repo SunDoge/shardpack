@@ -1,0 +1,28 @@
+[package]
+name = "shardpack-cli"
+description = "Command-line interface for ShardPack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+[[bin]]
+name = "shardpack"
+path = "src/main.rs"
+[dependencies]
+clap.workspace = true
+hex.workspace = true
+prost-types.workspace = true
+shardpack-catalog = { path = "../shardpack-catalog" }
+shardpack-core = { path = "../shardpack-core" }
+shardpack-format = { path = "../shardpack-format" }
+shardpack-gc = { path = "../shardpack-gc" }
+shardpack-manifest = { path = "../shardpack-manifest" }
+shardpack-runtime = { path = "../shardpack-runtime" }
+shardpack-storage = { path = "../shardpack-storage" }
+snafu.workspace = true
+tokio.workspace = true
+[lints]
+workspace = true
+[dev-dependencies]
+bytes.workspace = true
+tempfile = "3.23"

@@ -1,0 +1,29 @@
+[package]
+name = "shardpack-runtime"
+description = "Bounded distributed streaming runtime for ShardPack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+[dependencies]
+blake3.workspace = true
+async-stream.workspace = true
+bytes.workspace = true
+hex.workspace = true
+snafu.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+prost-types.workspace = true
+shardpack-catalog = { path = "../shardpack-catalog" }
+shardpack-format = { path = "../shardpack-format" }
+shardpack-cache = { path = "../shardpack-cache" }
+shardpack-codec = { path = "../shardpack-codec" }
+shardpack-manifest = { path = "../shardpack-manifest" }
+shardpack-storage = { path = "../shardpack-storage" }
+[lints]
+workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+tempfile = "3.21"
+tokio.workspace = true

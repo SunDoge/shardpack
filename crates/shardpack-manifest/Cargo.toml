@@ -1,0 +1,21 @@
+[package]
+name = "shardpack-manifest"
+description = "Protobuf manifests and immutable identities for ShardPack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+blake3.workspace = true
+hex.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+snafu.workspace = true
+
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3.2"
+
+[lints]
+workspace = true

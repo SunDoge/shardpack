@@ -1,0 +1,16 @@
+[package]
+name = "shardpack-codec"
+description = "Schema and record codec registry for ShardPack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+blake3.workspace = true
+bytes.workspace = true
+snafu.workspace = true
+shardpack-manifest = { path = "../shardpack-manifest" }
+
+[lints]
+workspace = true

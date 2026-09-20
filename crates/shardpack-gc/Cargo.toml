@@ -1,0 +1,25 @@
+[package]
+name = "shardpack-gc"
+description = "Mark-and-sweep GC and last-copy protection for ShardPack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hex.workspace = true
+prost.workspace = true
+snafu.workspace = true
+shardpack-catalog = { path = "../shardpack-catalog" }
+shardpack-manifest = { path = "../shardpack-manifest" }
+shardpack-storage = { path = "../shardpack-storage" }
+
+[dev-dependencies]
+bytes.workspace = true
+futures-util.workspace = true
+prost-types.workspace = true
+tempfile = "3.21"
+tokio.workspace = true
+
+[lints]
+workspace = true

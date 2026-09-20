@@ -1,0 +1,81 @@
+syntax = "proto3";
+package shardpack.v1;
+import "google/protobuf/timestamp.proto";
+
+enum Portability { PORTABILITY_UNSPECIFIED = 0; PORTABILITY_SELF_CONTAINED = 1; PORTABILITY_EXTERNAL_REFERENCES = 2; }
+enum Durability { DURABILITY_UNSPECIFIED = 0; DURABILITY_REBUILDABLE = 1; DURABILITY_DURABLE = 2; }
+enum LayoutState { LAYOUT_STATE_UNSPECIFIED = 0; LAYOUT_STATE_BUILDING = 1; LAYOUT_STATE_COMPLETE = 2; LAYOUT_STATE_RETIRED = 3; LAYOUT_STATE_INCOMPLETE = 4; }
+enum EncryptionAlgorithm { ENCRYPTION_ALGORITHM_UNSPECIFIED = 0; ENCRYPTION_ALGORITHM_AES_256_GCM = 1; }
+
+message EncryptionDescriptor {
+  EncryptionAlgorithm algorithm = 1;
+  string key_id = 2;
+}
+
+message MaterializationStats {
+  uint64 expected_records = 1;
+  uint64 written_records = 2;
+  uint64 skipped_records = 3;
+}
+
+message RecordSchemaDescriptor {
+  string codec_name = 1; uint32 codec_version = 2; bytes schema_id = 3;
+  optional bytes embedded_schema = 4;
+}
+message SplitDescriptor {
+  string name = 1; uint64 record_count = 2; string assignment = 3;
+  optional uint32 hash_upper_bound = 4;
+}
+message SplitAssignment {
+  uint64 seed = 1; uint32 modulus = 2; optional string group_field = 3;
+}
+message SnapshotSource {
+  oneof source { LanceSource lance = 1; ShardPackSource shardpack = 2; ImportedSource imported = 3; }
+}
+message LanceSource { string uri = 1; uint64 version = 2; }
+message ShardPackSource { optional bytes parent_snapshot_id = 1; }
+message ImportedSource { optional string description = 1; }
+
+message SnapshotManifest {
+  bytes snapshot_id = 1; string dataset_id = 2; optional bytes parent_snapshot_id = 3;
+  SnapshotSource source = 4; RecordSchemaDescriptor record_schema = 5;
+  repeated SplitDescriptor splits = 6; Portability portability = 7; Durability durability = 8;
+  uint64 logical_record_count = 9; google.protobuf.Timestamp created_at = 10;
+  map<string, string> metadata = 11; optional SplitAssignment split_assignment = 12;
+  optional MaterializationStats materialization_stats = 13;
+}
+message ContentFingerprint { uint64 record_count = 1; bytes accumulator_a = 2; bytes accumulator_b = 3; }
+message ShardMeta {
+  bytes shard_id = 1; string object_uri = 2; uint64 byte_size = 3; uint64 record_count = 4;
+  uint32 block_count = 5; ContentFingerprint content_fingerprint = 6;
+}
+message LayoutRecipe {
+  uint64 target_shard_bytes = 1; uint64 target_block_bytes = 2; string block_codec = 3;
+  optional uint64 shuffle_seed = 4;
+}
+message LayoutManifest {
+  bytes layout_id = 1; bytes snapshot_id = 2; string builder_version = 3; LayoutRecipe recipe = 4;
+  Portability portability = 5; Durability durability = 6; uint64 total_records = 7;
+  uint64 total_bytes = 8; ContentFingerprint content_fingerprint = 9; repeated ShardMeta shards = 10;
+  google.protobuf.Timestamp created_at = 11; LayoutState state = 12;
+  optional string split_name = 13;
+  optional MaterializationStats materialization_stats = 14;
+  optional EncryptionDescriptor encryption = 15;
+}
+
+enum PinReason { PIN_REASON_UNSPECIFIED = 0; PIN_REASON_RUNNING_JOB = 1; PIN_REASON_MANUAL = 2; PIN_REASON_RETENTION = 3; }
+message PreferredLayoutEvent {
+  bytes snapshot_id = 1; uint64 generation = 2; optional bytes previous_layout_id = 3;
+  bytes layout_id = 4; google.protobuf.Timestamp created_at = 5;
+}
+message LayoutPin {
+  string pin_id = 1; bytes snapshot_id = 2; bytes layout_id = 3; PinReason reason = 4;
+  google.protobuf.Timestamp created_at = 5; optional google.protobuf.Timestamp expires_at = 6;
+}
+message LayoutRetirement {
+  bytes snapshot_id = 1; bytes layout_id = 2; bytes replacement_layout_id = 3;
+  google.protobuf.Timestamp retired_at = 4;
+}
+message CoordinationBarrier {
+  string owner_id = 1; string purpose = 2; google.protobuf.Timestamp created_at = 3;
+}

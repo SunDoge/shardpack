@@ -1,0 +1,26 @@
+[package]
+name = "shardpack-cache"
+description = "Verified local NVMe shard cache for ShardPack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-stream.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+snafu.workspace = true
+shardpack-manifest = { path = "../shardpack-manifest" }
+shardpack-storage = { path = "../shardpack-storage" }
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+shardpack-format = { path = "../shardpack-format" }
+tempfile = "3.21"
+
+[lints]
+workspace = true

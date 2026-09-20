@@ -1,0 +1,37 @@
+[package]
+name = "shardpack-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+prost = "0.14"
+shardpack-format = { path = "../crates/shardpack-format" }
+shardpack-manifest = { path = "../crates/shardpack-manifest" }
+
+[[bin]]
+name = "parse-shard"
+path = "fuzz_targets/parse_shard.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse-encrypted-shard"
+path = "fuzz_targets/parse_encrypted_shard.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse-manifest"
+path = "fuzz_targets/parse_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
