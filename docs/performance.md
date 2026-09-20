@@ -76,6 +76,31 @@ The zstd frame checksum is disabled because every stored block already has a
 CRC32C, encrypted blocks additionally have an AEAD tag, and full shard reads
 validate the exact BLAKE3 identity.
 
+## Python COCO ingestion
+
+The release-mode Python buffer writer was tested against local COCO 2017. Each
+record contained compact per-image annotations and the complete JPEG, so the
+result was self-contained rather than an object URI index. Source, staging, and
+output were on the same NVMe filesystem.
+
+| Input | Records | Payload | Producer | End-to-end write | Sequential verify |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| val2017, serial reader | 5,000 | 0.78 GiB | 0.984 GiB/s | 0.911 GiB/s | 2.259 GiB/s |
+| train2017, serial reader | 118,287 | 18.42 GiB | 0.391 GiB/s | 0.391 GiB/s | 2.261 GiB/s |
+| train2017, 8 readers / 32 images per task | 118,287 | 18.42 GiB | 0.824 GiB/s | 0.820 GiB/s | — |
+
+The optimized full-train run reaches roughly 86% of the approximately 0.95
+GiB/s native uncompressed writer result on this host. The remaining gap is in
+Python small-file and record assembly work: 16 reader threads and 128 MiB batches
+both regressed. A 64 MiB packed batch, eight file readers, and coarse 32-image
+read tasks were the best tested settings.
+
+Staging placement materially changes the result. Staging under `/tmp` while the
+filesystem store was under `/data` forced a streamed cross-filesystem publish and
+destination verification, reducing the small validation run to 0.125 GiB/s.
+For a local store, staging should be on the same filesystem so publication can
+use an atomic rename.
+
 ## Real dataset packaging smoke test
 
 The ignored OCR integration test packages each image and its annotation into one
