@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "shardpack"
 version = "0.1.0"
-description = "S3-first streaming loader for ShardPack datasets"
+description = "S3-first upload SDK and validation reader for ShardPack datasets"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"

@@ -1,20 +1,10 @@
-"""Python interface to the native ShardPack training runtime."""
+"""Python upload API and simple correctness reader for ShardPack."""
 
-from ._native import (
-    BatchLoader,
-    Dataset,
-    DatasetWriter,
-    LoaderCheckpoint,
-    Record,
-    RecordLoader,
-    __version__,
-)
+from ._native import Dataset, DatasetWriter, Record, RecordLoader, __version__
 
 __all__ = [
-    "BatchLoader",
     "Dataset",
     "DatasetWriter",
-    "LoaderCheckpoint",
     "Record",
     "RecordLoader",
     "__version__",

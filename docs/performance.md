@@ -41,9 +41,9 @@ loader.
 
 The bounded shuffle pool performs O(1) random eviction when its record-count
 limit binds and allocation-free reservoir selection when its byte limit binds.
-Python batch iteration drives a complete encoded batch through Tokio in one GIL
-release. Loader-checkpoint protobuf payloads decode as `Bytes` slices backed by
-one shared buffer instead of cloning every buffered record.
+The Python reader is deliberately record-at-a-time and intended for validation;
+the production Rust dataloader can drive batching and checkpointing without
+copying payloads into Python-owned `bytes` first.
 
 ## Zstd implementation
 

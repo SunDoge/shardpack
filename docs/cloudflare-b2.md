@@ -126,6 +126,8 @@ local NVMe cache -> Cloudflare edge -> B2 origin
 ```
 
 Cloudflare reduces origin transfer cost and can accelerate shared hot shards;
-node-local NVMe remains the predictable cache for repeated epochs. With
-`cache_mode="plaintext"`, the first epoch trains while downloading and
-authenticating ciphertext; later epochs read the derived plaintext shard only.
+node-local NVMe remains the predictable cache for repeated epochs. When the Rust
+dataloader configures `LocalCache` for plaintext derivation, the first epoch
+trains while downloading and authenticating ciphertext; later epochs read the
+derived plaintext shard only. This hot-path cache policy is intentionally not
+part of the simple Python validation reader.

@@ -22,9 +22,12 @@ dependency on Lance, S3, or a particular training framework.
 | `shardpack-catalog` | Append-only preferred-layout generations and persistent layout pins | record payload semantics |
 | `shardpack-cli` | Thin operational frontend | private format implementation details |
 
-Rust core accepts an encoded record stream and has no Lance dependency. A future
+Rust core accepts an encoded record stream and has no Lance dependency. The
 Python SDK may scan Lance (or any Python data source), resolve raw assets, encode
-self-contained records, and feed that stream into the core. Storage uses the same
+self-contained records, and feed that stream into the core. Its reader is only a
+plain correctness and inspection interface. Production training integrates the
+Rust runtime into a separate Rust dataloader feeding the Python model, keeping
+cache, prefetch, shuffle, decode, transforms and batching out of Python. Storage uses the same
 Apache OpenDAL operator API for local filesystem tests and S3; backend selection
 must not change ShardPack semantics.
 

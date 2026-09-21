@@ -18,22 +18,23 @@ bounded record + byte channel
 one deterministic Rust shard packer
         |
         v
-bounded completed-shard queue
+stage one completed shard
         |
-        +----> uploader 0
-        +----> uploader 1
-        +----> uploader N
-                    |
-                    v
-          single layout publisher
+        v
+OpenDAL immutable upload
+        |
+        v
+single layout publisher
 ```
 
 One packer is intentional. The measured plain and encrypted writers already
 produce roughly 0.95 and 0.84 GiB/s on the development host, normally faster than
 a Python producer or one S3 destination. It also makes record order, shard
 boundaries, block nonces, BLAKE3 identity, and reproducibility independent of task
-scheduling. Uploading completed shards overlaps network I/O with construction of
-the next shard and is the first useful concurrency boundary.
+scheduling. OpenDAL may perform concurrent multipart transfer within one object,
+but the MVP does not yet overlap uploading one completed shard with packing the
+next. A bounded completed-shard upload queue is the next useful concurrency
+boundary.
 
 The first public ingestion API is a packed CPU-buffer batch:
 
@@ -75,7 +76,6 @@ struct PythonWriterOptions {
 }
 
 struct WriterEncryption {
-    algorithm: EncryptionAlgorithm,
     key_id: String,
     key: EncryptionKey,
 }
@@ -84,39 +84,36 @@ struct PythonWriterLimits {
     queue_batches: usize,
     max_batch_records: usize,
     max_batch_bytes: usize,
-    completed_shard_queue_bytes: u64,
-    upload_concurrency: usize,
-    staging_max_bytes: u64,
 }
 ```
+
+The fields above describe the current public surface. Future upload pipelining
+will add a completed-shard byte budget, upload concurrency and a total staging
+budget together so concurrency cannot exhaust local disk.
 
 `max_shard_bytes` is optional. When set, publication rejects a completed
 multi-record shard above the hard ceiling; a single-record jumbo shard remains
 legal. The Cloudflare/B2 profile uses a 384 MiB soft target and 480 MiB ceiling.
 
-`algorithm` is explicit even while AES-256-GCM is the only accepted value. The
-layout persists `algorithm` and `key_id`; key bytes remain process-local and are
-zeroized. Adding another algorithm later must be an explicit format capability,
+The layout persists the encryption algorithm and `key_id`; key bytes remain
+process-local and are zeroized. AES-256-GCM is currently the only writer
+algorithm, so the Python constructor does not expose a redundant algorithm
+selector. Adding another algorithm later must be an explicit format capability,
 not an environment-dependent automatic choice.
 
 The Python surface should mirror these fields and require encryption values as a
 group:
 
 ```python
-DatasetWriter(
-    ...,
-    encryption_algorithm="aes-256-gcm",
-    encryption_key_id="kms://training/key-7",
-    encryption_key=key_bytes,
-)
+DatasetWriter(..., encryption_key_id="kms://training/key-7", encryption_key=key_bytes)
 ```
 
 ## Threads and processes
 
-Multiple Python threads may enqueue batches through cloneable producer handles.
-A monotonically assigned sequence preserves call admission order, and exactly one
-handle owns `finish()`. In practice batching matters more than Python thread count
-when preprocessing is light.
+Multiple Python threads may call `write_batch`; an admission lock preserves call
+order and prevents `finish()` from racing an accepted batch. Exactly one native
+writer owns the worker and final publication. In practice batching matters more
+than Python thread count when preprocessing is light.
 
 An active writer is process-affine and must reject use after `fork`. Tokio
 runtimes, OpenDAL clients, channels, staging descriptors, and multipart state are
@@ -130,12 +127,14 @@ interface from that version onward. Wheels therefore target `abi3-py311`.
 
 ## Commit and failure behavior
 
-The packer writes a local temporary shard, computes its exact `ShardId`, and then
-places it on the completed-shard queue. Upload workers conditionally publish the
-content-addressed final key and verify streamed or pre-existing objects. The local
-staging budget applies backpressure before disk exhaustion.
+The packer writes a local temporary shard, computes its exact `ShardId`, then
+conditionally publishes the content-addressed final key and verifies streamed or
+pre-existing objects before packing the next shard. Input-channel limits provide
+memory backpressure; callers must currently provision staging space for one
+maximum-size shard. The planned upload pipeline must add an explicit aggregate
+staging budget before allowing multiple completed shards in flight.
 
-`finish()` closes admission, drains the packer and uploaders, validates aggregate
+`finish()` closes admission, joins the worker, validates aggregate
 record count and content fingerprint, then publishes the immutable layout. Any
 worker failure closes admission and is returned consistently by later writes and
 `finish()`. A layout is never published from a partial build; abandoned local or

@@ -2386,14 +2386,9 @@ dependencies = [
 name = "shardpack-python"
 version = "0.1.0"
 dependencies = [
- "aws-lc-rs",
- "blake3",
  "bytes",
- "getrandom 0.4.3",
  "hex",
- "prost",
  "pyo3",
- "shardpack-cache",
  "shardpack-config",
  "shardpack-core",
  "shardpack-format",

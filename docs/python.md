@@ -1,7 +1,8 @@
 # Python SDK
 
-The Python package is a mixed Python/Rust project managed by `uv` and `maturin`.
-It builds one abi3 extension for CPython 3.11 and newer.
+The Python package is the offline ingestion and upload interface for ShardPack.
+It is a mixed Python/Rust project managed by `uv` and `maturin`, and builds one
+abi3 extension for CPython 3.11 and newer.
 
 ```bash
 cd python
@@ -10,16 +11,14 @@ uv run maturin develop
 uv run pytest
 ```
 
-Release artifacts are reproducible through the repository tasks:
+Release artifacts use Zig to retain a manylinux 2.17 baseline:
 
 ```bash
 mise run test:python
 mise run build:python
 ```
 
-The wheel uses abi3 for CPython 3.11+ and Zig to retain a manylinux 2.17 baseline.
-The maturin source distribution includes the Rust path dependencies and has been
-rebuilt and tested in an isolated uv environment.
+## Writing datasets
 
 `DatasetWriter` accepts packed CPU buffers without linking against the NumPy C
 ABI. One batch consists of a contiguous `uint8` payload arena, `uint64` offsets,
@@ -38,148 +37,61 @@ writer = DatasetWriter(
     config="~/.config/shardpack/config.toml",
     snapshot_id=bytes.fromhex("00" * 32),
     staging_dir="/local-nvme/shardpack-staging",
+    store="public-datasets",
+    encryption_key_id="kms://training/key-7",
+    encryption_key=key_bytes,
 )
 writer.write_batch(data, offsets, sample_ids)
 layout_key = writer.finish()
 ```
 
-The native call copies the arena before returning, so callers may immediately
-reuse writable NumPy buffers. Admission is bounded by batch count, records, and
-bytes; waiting for channel capacity releases the GIL.
+The native call copies the arena before returning, so the caller may immediately
+reuse writable NumPy buffers. A bounded channel connects Python producers to one
+Rust materialization worker. Waiting for channel capacity releases the GIL.
+Record and byte limits reject unexpectedly large batches before admission.
 
-`Dataset` loads the authoritative protobuf layout through a named store in the
-normal ShardPack TOML configuration. Shards referenced by that layout may reside
-in any of the configured stores.
+The writer is safe to call from multiple Python threads: admission is serialized
+and each accepted batch remains intact. It is process-affine and rejects use after
+`fork`; each child process must create its own writer. Multiple processes should
+write different snapshots or object prefixes rather than sharing one writer.
+
+The Rust worker performs block construction, CRC32C, optional Zstd compression,
+optional authenticated encryption, immutable object publication, and layout
+manifest publication. OpenDAL supplies the same storage path for local filesystem
+tests and S3-compatible production stores.
+
+## Simple validation reader
+
+Python intentionally exposes only a plain sequential reader. It exists for smoke
+tests, dataset inspection, and writer round-trip validation; it is not the
+production training loader.
 
 ```python
 from shardpack import Dataset
 
 dataset = Dataset(
     config="~/.config/shardpack/config.toml",
-    layout="layouts/ab/cd/<layout-id>.layout.pb",
-    store="training",
+    layout=layout_key,
+    store="public-datasets",
 )
 
-loader = dataset.records(
-    cache_dir="/local-nvme/shardpack",
-    cache_max_bytes=2 * 1024**4,
-    network_concurrency=4,
-    network_prefetch_bytes=256 * 1024**2,
-    shuffle_max_records=4096,
-    shuffle_max_bytes=256 * 1024**2,
-    shuffle_seed=29,
-    epoch=3,
-    shard_seed=17,
-    rank=0,
-    world_size=8,
-)
-
-for record in loader:
-    sample_id = record.sample_id
-    encoded_payload = record.payload
-```
-
-The Python iterator is synchronous for straightforward trainer integration. Each
-blocking call releases the GIL while a private Tokio runtime performs asynchronous
-OpenDAL reads. Rust tasks concurrently prefetch compressed shard bytes, and a
-record/byte-bounded pool shuffles encoded records before Python allocation. Network
-and shuffle memory are independently bounded. Set both shuffle limits to zero to
-disable record shuffle. `Dataset.batches()` pulls a whole encoded batch during one
-Rust runtime drive, avoiding one Tokio/GIL scheduling round trip per record. It
-also handles final batches; schema-specific decode and tensor transforms remain
-application code.
-
-Encrypted layouts accept the external key explicitly. The manifest contains only
-the key ID:
-
-```python
-loader = dataset.records(
-    cache_dir="/local-nvme/shardpack",
-    cache_mode="plaintext",
+for record in dataset.records(
     encryption_key_id="kms://training/key-7",
-    encryption_key=key_bytes,  # exactly 32 bytes
-)
+    encryption_key=key_bytes,
+):
+    assert len(record.sample_id) == 16
+    consume(record.flags, record.payload)
 ```
 
-`cache_mode="plaintext"` requires an encrypted layout and its external key.
-During the first epoch, authenticated blocks reach the loader while a plaintext,
-still-compressed `.spk` is written to NVMe. Publication is atomic after complete
-remote identity verification; later epochs no longer decrypt. Keep the default
-`"ciphertext"` mode when local disks are outside the trusted boundary.
+The iterator reads shards in manifest order, validates the normal ShardPack
+checksums and identities, optionally decrypts records, and releases the GIL while
+waiting for asynchronous OpenDAL I/O. It deliberately provides no cache,
+prefetch, shuffle, batching, distributed partitioning, metrics, or checkpoint
+surface.
 
-## PyTorch worker integration
-
-Construct `Dataset` and its loader inside each worker process. This avoids sharing
-S3 clients, Tokio runtimes, or open cache descriptors across `fork` boundaries.
-
-```python
-import os
-from torch.utils.data import IterableDataset, get_worker_info
-from shardpack import Dataset
-
-
-class TrainingRecords(IterableDataset):
-    def __init__(self, config: str, layout: str, cache: str, epoch: int):
-        self.config = config
-        self.layout = layout
-        self.cache = cache
-        self.epoch = epoch
-
-    def __iter__(self):
-        worker = get_worker_info()
-        worker_id = 0 if worker is None else worker.id
-        workers = 1 if worker is None else worker.num_workers
-        dataset = Dataset(self.config, self.layout)
-        return dataset.records(
-            cache_dir=self.cache,
-            epoch=self.epoch,
-            shard_seed=0x5A17,
-            rank=int(os.environ.get("RANK", "0")),
-            world_size=int(os.environ.get("WORLD_SIZE", "1")),
-            worker=worker_id,
-            workers_per_rank=workers,
-        )
-```
-
-`RecordLoader` and `BatchLoader` are intentionally thread-affine. Multiple Python
-threads or training workers should create independent loaders. Multiple processes
-may safely share one local cache directory; cache publication and eviction are
-cross-process coordinated.
-
-The loader exposes lock-free counters using `loader.metrics()`, including records,
-encoded bytes, completed shards, exact-identity-verified shards, prefetched shards,
-retries, checksum failures, queue backpressure, cache hits/misses, downloaded bytes,
-corruption, stale partial cleanup, and eviction. A suffix-only Range GET resumed
-without cache increments `shards_completed` but not `shards_verified`, because its
-unread prefix cannot be authenticated.
-
-## Exact resume
-
-A loader checkpoint includes the block-boundary reader position, distributed
-assignment, every buffered encoded record in the bounded shuffle pool, and its RNG
-state. It can therefore be persisted without changing the future sample order:
-
-```python
-checkpoint_bytes = loader.checkpoint().to_bytes()
-
-# Store checkpoint_bytes in the trainer checkpoint.
-checkpoint = shardpack.LoaderCheckpoint.from_bytes(checkpoint_bytes)
-loader = dataset.resume_records(
-    checkpoint,
-    cache_dir="/local-nvme/shardpack",
-)
-```
-
-Encrypted layouts require an encryption key when serializing the checkpoint so
-buffered record payloads can never be persisted in plaintext. This key can be the
-trainer-checkpoint key and need not equal the dataset key:
-
-```python
-checkpoint_bytes = loader.checkpoint().to_bytes(checkpoint_key)
-checkpoint = shardpack.LoaderCheckpoint.from_bytes(checkpoint_bytes, checkpoint_key)
-```
-
-The dataset key is still required again by `resume_records`. Because buffered
-encoded records are part of the checkpoint, its serialized size is bounded by
-`shuffle_max_bytes` but may be substantial. Persist it at the same safe point as
-the model and optimizer state.
+Production training should integrate the Rust crates directly—especially
+`shardpack-runtime`, `shardpack-cache`, `shardpack-storage`, and
+`shardpack-format`—inside the Rust dataloader that feeds the Python model. This
+keeps all hot-path scheduling, decode, transforms, batching, cache affinity, and
+distributed assignment outside Python while leaving Python free for Lance
+filtering and offline dataset construction.

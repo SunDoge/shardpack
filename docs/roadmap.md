@@ -75,18 +75,20 @@
 - Done: optional encrypted v1 blocks protect the directory and compressed payload
   with AWS-LC AES-256-GCM, external key IDs, per-shard derived keys, block-boundary
   recovery, zeroized in-process keys, and a retained cross-provider throughput bench.
-- Done: abi3 Python SDK managed by uv/maturin with typed record and batch iterators,
-  multi-store config loading, bounded shard prefetch, NVMe cache, deterministic
-  rank/worker partitioning, encryption keys, metrics, and native end-to-end tests.
-- Next: single-process Python materialization with batched PyO3 admission, one
-  deterministic Rust shard packer, bounded local staging, concurrent uploads,
-  explicit AES encryption options, and single-owner layout publication.
+- Done: abi3 Python SDK managed by uv/maturin with batched packed-buffer admission,
+  a deterministic Rust materialization worker, bounded producer backpressure,
+  multi-store configuration, encryption options, and native round-trip tests.
+- Done: a deliberately plain Python sequential reader supports inspection,
+  decryption and correctness tests without duplicating the production Rust
+  dataloader's cache, prefetch, shuffle, batching or checkpoint API.
+- Next: overlap completed-shard upload with construction of the following shard,
+  with bounded local staging and deterministic single-owner layout publication.
 - Done: credential-free read-only HTTP stores support public B2/Cloudflare and
   untrusted mirrors without placing upload credentials on training nodes.
 - Done: encrypted cold reads can train while atomically constructing a verified
   plaintext NVMe cache; warm epochs avoid network and AEAD work.
-- Deferred: multi-process fragment-manifest materialization, optional Lance input,
-  and framework-specific tensor decoders.
+- Deferred: multi-process fragment-manifest materialization, built-in Lance input,
+  framework-specific tensor decoders, and a production Python training loader.
 
 Every stage must keep published objects immutable and retain end-to-end tests that
 train/read without access to any canonical source.
