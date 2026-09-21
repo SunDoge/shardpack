@@ -17,7 +17,7 @@ use shardpack_core::{
 };
 use shardpack_format::BlockCodec;
 use shardpack_manifest::proto;
-use shardpack_runtime::{DatasetReader, EncodedRecord};
+use shardpack_runtime::{DatasetReader, DistributedContext, EncodedRecord};
 use shardpack_storage::StoreRegistry;
 
 const DEFAULT_WRITER_MAX_BATCH_BYTES: usize = 256 * 1024 * 1024;
@@ -515,14 +515,32 @@ impl PyDataset {
         &self.layout_key
     }
 
-    #[pyo3(signature = (*, encryption_key_id=None, encryption_key=None))]
+    #[pyo3(signature = (*, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None))]
+    #[allow(clippy::too_many_arguments)]
     fn records(
         &self,
+        epoch: u64,
+        shard_seed: u64,
+        rank: usize,
+        world_size: usize,
+        worker: usize,
+        workers_per_rank: usize,
         encryption_key_id: Option<String>,
         encryption_key: Option<&Bound<'_, PyBytes>>,
     ) -> PyResult<PyRecordLoader> {
-        let mut reader = DatasetReader::new_with_registry(self.stores.clone(), self.layout.clone())
-            .map_err(runtime_error)?;
+        let mut reader = DatasetReader::new_assigned_with_registry(
+            self.stores.clone(),
+            self.layout.clone(),
+            epoch,
+            shard_seed,
+            DistributedContext {
+                rank,
+                world_size,
+                worker,
+                workers_per_rank,
+            },
+        )
+        .map_err(runtime_error)?;
         if let Some((key_id, key)) = parse_encryption(encryption_key_id, encryption_key)? {
             reader = reader
                 .with_decryption_key(&key_id, key)

@@ -34,6 +34,12 @@ class Dataset:
     def records(
         self,
         *,
+        epoch: int = 0,
+        shard_seed: int = 0,
+        rank: int = 0,
+        world_size: int = 1,
+        worker: int = 0,
+        workers_per_rank: int = 1,
         encryption_key_id: str | None = None,
         encryption_key: bytes | None = None,
     ) -> RecordLoader: ...

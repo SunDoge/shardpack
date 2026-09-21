@@ -83,11 +83,11 @@ for record in dataset.records(
     consume(record.flags, record.payload)
 ```
 
-The iterator reads shards in manifest order, validates the normal ShardPack
-checksums and identities, optionally decrypts records, and releases the GIL while
-waiting for asynchronous OpenDAL I/O. It deliberately provides no cache,
-prefetch, shuffle, batching, distributed partitioning, metrics, or checkpoint
-surface.
+The iterator reads shards in deterministic shard order, validates the normal
+ShardPack checksums and identities, optionally decrypts records, and releases the
+GIL while waiting for asynchronous OpenDAL I/O. It supports shard-level
+rank/worker partitioning for correctness, but deliberately provides no cache,
+prefetch, record shuffle, batching, metrics, or checkpoint surface.
 
 Production training should integrate the Rust crates directly—especially
 `shardpack-runtime`, `shardpack-cache`, `shardpack-storage`, and
@@ -95,3 +95,54 @@ Production training should integrate the Rust crates directly—especially
 keeps all hot-path scheduling, decode, transforms, batching, cache affinity, and
 distributed assignment outside Python while leaving Python free for Lance
 filtering and offline dataset construction.
+
+## Transitional PyTorch data source
+
+Until the dedicated Rust training dataloader is ready, `shardpack.pytorch`
+provides a minimal `IterableDataset`. PyTorch remains an optional host dependency
+and is not installed by the ShardPack wheel.
+
+```python
+from io import BytesIO
+
+import torch
+from PIL import Image
+from shardpack.pytorch import ShardPackDataset
+
+
+def decode(record):
+    image = Image.open(BytesIO(record.payload)).convert("RGB")
+    return transform(image), record.flags
+
+
+source = ShardPackDataset(
+    config="~/.config/shardpack/config.toml",
+    layout="layouts/ab/cd/<layout-id>.layout.pb",
+    store="training",
+    decode=decode,
+    shard_seed=0x5A17,
+    encryption_key_id="kms://training/key-7",
+    encryption_key=key_bytes,
+)
+loader = torch.utils.data.DataLoader(
+    source,
+    batch_size=128,
+    num_workers=8,
+    pin_memory=True,
+)
+```
+
+The adapter detects initialized `torch.distributed` rank/world size, falling back
+to `RANK` and `WORLD_SIZE`, then combines them with DataLoader worker identity.
+The Rust reader assigns whole shards so ranks and workers are disjoint without
+sample-level range requests. Native store/runtime state is constructed inside
+each worker and never crosses `fork`.
+
+Call `source.set_epoch(epoch)` before constructing each epoch iterator to change
+the deterministic shard order. With `persistent_workers=True`, mutations in the
+parent dataset object do not propagate into existing worker copies; recreate the
+DataLoader workers or pass an explicit cross-process epoch mechanism. Shard-level
+partitioning can yield different record counts per rank, so DDP training must use
+a fixed step budget, coordinated truncation/padding, or join semantics to prevent
+collective mismatch. The transitional adapter intentionally has no Python-side
+cache or prefetch; those remain responsibilities of the forthcoming Rust loader.
