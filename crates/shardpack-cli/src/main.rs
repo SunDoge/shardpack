@@ -6,7 +6,7 @@ use shardpack_core::{
     ImportOptions, MaterializeOptions, import_shardpack_coordinated_with_registry, load_layout,
     load_snapshot, rebalance_layout_transaction_with_registry,
 };
-use shardpack_format::BlockCodec;
+use shardpack_format::{BLOCK_HEADER_SIZE, BlockCodec, RECORD_ENTRY_SIZE, SHARD_HEADER_SIZE};
 use shardpack_manifest::{LayoutId, SnapshotId, proto};
 use shardpack_runtime::{DatasetReader, IncompleteLayoutPolicy};
 use shardpack_storage::{S3Options, Store, StoreRegistry};
@@ -35,6 +35,10 @@ enum Error {
     },
     #[snafu(display("invalid hexadecimal schema ID: {source}"))]
     Hex { source: hex::FromHexError },
+    #[snafu(display("compression analysis failed: {source}"))]
+    Compression { source: zrip::CompressError },
+    #[snafu(display("invalid analysis option: {reason}"))]
+    InvalidAnalysisOption { reason: &'static str },
     #[snafu(display("refusing destructive GC without --yes"))]
     ConfirmationRequired,
 }
@@ -115,6 +119,21 @@ enum Command {
     },
     /// Stream and verify every shard, block, record and aggregate in a layout.
     Verify { layout_key: String },
+    /// Sample encoded records and estimate whether block-level Zstd is worthwhile.
+    AnalyzeCompression {
+        layout_key: String,
+        #[arg(long, default_value_t = 10_000)]
+        sample_records: u64,
+        #[arg(long, default_value_t = 1_073_741_824)]
+        sample_bytes: u64,
+        /// Override the layout recipe's target block size.
+        #[arg(long)]
+        target_block_bytes: Option<usize>,
+        #[arg(long, default_value_t = 1)]
+        zstd_level: i32,
+        #[arg(long, default_value_t = 10.0)]
+        minimum_savings_percent: f64,
+    },
     /// Import existing shard objects into a durable standalone snapshot.
     Import {
         #[arg(long)]
@@ -240,6 +259,28 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Inspect { kind, key } => inspect(&store, kind, &key).await,
         Command::Verify { layout_key } => verify(&storage.registry, &store, &layout_key).await,
+        Command::AnalyzeCompression {
+            layout_key,
+            sample_records,
+            sample_bytes,
+            target_block_bytes,
+            zstd_level,
+            minimum_savings_percent,
+        } => {
+            analyze_compression(
+                &storage.registry,
+                &store,
+                &layout_key,
+                CompressionAnalysisOptions {
+                    sample_records,
+                    sample_bytes,
+                    target_block_bytes,
+                    zstd_level,
+                    minimum_savings_percent,
+                },
+            )
+            .await
+        }
         Command::Import {
             dataset_id,
             codec_name,
@@ -544,6 +585,213 @@ async fn verify(registry: &StoreRegistry, store: &Store, layout_key: &str) -> Re
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CompressionAnalysisOptions {
+    sample_records: u64,
+    sample_bytes: u64,
+    target_block_bytes: Option<usize>,
+    zstd_level: i32,
+    minimum_savings_percent: f64,
+}
+
+#[derive(Debug, Default)]
+struct CompressionAnalysis {
+    records: u64,
+    payload_bytes: u64,
+    none_stored_bytes: u64,
+    zstd_stored_bytes: u64,
+    blocks: u64,
+}
+
+impl CompressionAnalysis {
+    fn ratio(&self) -> f64 {
+        self.zstd_stored_bytes as f64 / self.none_stored_bytes as f64
+    }
+
+    fn savings_percent(&self) -> f64 {
+        (1.0 - self.ratio()) * 100.0
+    }
+}
+
+async fn analyze_compression(
+    registry: &StoreRegistry,
+    store: &Store,
+    layout_key: &str,
+    options: CompressionAnalysisOptions,
+) -> Result<()> {
+    if options.sample_records == 0 {
+        return Err(Error::InvalidAnalysisOption {
+            reason: "sample-records must be greater than zero",
+        });
+    }
+    if options.sample_bytes == 0 {
+        return Err(Error::InvalidAnalysisOption {
+            reason: "sample-bytes must be greater than zero",
+        });
+    }
+    if !(0.0..=100.0).contains(&options.minimum_savings_percent) {
+        return Err(Error::InvalidAnalysisOption {
+            reason: "minimum-savings-percent must be between 0 and 100",
+        });
+    }
+
+    let layout = load_layout(store, layout_key)
+        .await
+        .map_err(|source| Error::Core { source })?;
+    let recipe_block_bytes = layout
+        .recipe
+        .as_ref()
+        .and_then(|recipe| usize::try_from(recipe.target_block_bytes).ok());
+    let target_block_bytes = options
+        .target_block_bytes
+        .or(recipe_block_bytes)
+        .unwrap_or(16 * 1024 * 1024);
+    if target_block_bytes == 0 {
+        return Err(Error::InvalidAnalysisOption {
+            reason: "target-block-bytes must be greater than zero",
+        });
+    }
+
+    let mut reader = DatasetReader::new_with_registry_and_incomplete_policy(
+        registry.clone(),
+        layout,
+        IncompleteLayoutPolicy::Allow,
+    )
+    .map_err(|source| Error::Runtime { source })?;
+    let mut compressor = zrip::CompressContext::new(options.zstd_level)
+        .map_err(|source| Error::Compression { source })?;
+    compressor.set_content_checksum(false);
+    let mut analysis = CompressionAnalysis::default();
+    let mut block_payload = Vec::with_capacity(target_block_bytes);
+    let mut block_records = 0_usize;
+
+    while analysis.records < options.sample_records && analysis.payload_bytes < options.sample_bytes
+    {
+        let Some(record) = reader
+            .next_record()
+            .await
+            .map_err(|source| Error::Runtime { source })?
+        else {
+            break;
+        };
+        let next_size = block_payload
+            .len()
+            .checked_add(record.payload.len())
+            .and_then(|bytes| {
+                block_records
+                    .checked_add(1)?
+                    .checked_mul(RECORD_ENTRY_SIZE)?
+                    .checked_add(bytes)
+            })
+            .ok_or(Error::InvalidAnalysisOption {
+                reason: "sample block size overflow",
+            })?;
+        if block_records != 0 && next_size > target_block_bytes {
+            analyze_block(
+                &mut analysis,
+                &mut compressor,
+                &block_payload,
+                block_records,
+            )?;
+            block_payload.clear();
+            block_records = 0;
+        }
+        block_payload.extend_from_slice(&record.payload);
+        block_records += 1;
+        analysis.records += 1;
+        analysis.payload_bytes = analysis
+            .payload_bytes
+            .saturating_add(record.payload.len() as u64);
+
+        let buffered_size = block_payload
+            .len()
+            .saturating_add(block_records.saturating_mul(RECORD_ENTRY_SIZE));
+        if buffered_size >= target_block_bytes {
+            analyze_block(
+                &mut analysis,
+                &mut compressor,
+                &block_payload,
+                block_records,
+            )?;
+            block_payload.clear();
+            block_records = 0;
+        }
+    }
+    if block_records != 0 {
+        analyze_block(
+            &mut analysis,
+            &mut compressor,
+            &block_payload,
+            block_records,
+        )?;
+    }
+    if analysis.records == 0 {
+        return Err(Error::InvalidAnalysisOption {
+            reason: "layout contains no records",
+        });
+    }
+
+    let savings = analysis.savings_percent();
+    let recommendation = if savings >= options.minimum_savings_percent {
+        "zstd"
+    } else {
+        "none"
+    };
+    println!("sample_records={}", analysis.records);
+    println!("sample_payload_bytes={}", analysis.payload_bytes);
+    println!("sample_blocks={}", analysis.blocks);
+    println!("target_block_bytes={target_block_bytes}");
+    println!("none_estimated_bytes={}", analysis.none_stored_bytes);
+    println!("zstd_estimated_bytes={}", analysis.zstd_stored_bytes);
+    println!("zstd_ratio={:.6}", analysis.ratio());
+    println!("savings_percent={savings:.3}");
+    println!(
+        "recommendation={recommendation} threshold_percent={:.3}",
+        options.minimum_savings_percent
+    );
+    Ok(())
+}
+
+fn analyze_block(
+    analysis: &mut CompressionAnalysis,
+    compressor: &mut zrip::CompressContext,
+    payload: &[u8],
+    records: usize,
+) -> Result<()> {
+    let directory_bytes =
+        records
+            .checked_mul(RECORD_ENTRY_SIZE)
+            .ok_or(Error::InvalidAnalysisOption {
+                reason: "sample directory size overflow",
+            })?;
+    let compressed_bytes = compressor
+        .compress(payload)
+        .map_err(|source| Error::Compression { source })?
+        .len();
+    let fixed_bytes =
+        BLOCK_HEADER_SIZE
+            .checked_add(directory_bytes)
+            .ok_or(Error::InvalidAnalysisOption {
+                reason: "sample block framing size overflow",
+            })?;
+    analysis.none_stored_bytes = analysis.none_stored_bytes.saturating_add(
+        u64::try_from(fixed_bytes.saturating_add(payload.len())).unwrap_or(u64::MAX),
+    );
+    analysis.zstd_stored_bytes = analysis.zstd_stored_bytes.saturating_add(
+        u64::try_from(fixed_bytes.saturating_add(compressed_bytes)).unwrap_or(u64::MAX),
+    );
+    analysis.blocks += 1;
+    if analysis.blocks == 1 {
+        analysis.none_stored_bytes = analysis
+            .none_stored_bytes
+            .saturating_add(SHARD_HEADER_SIZE as u64);
+        analysis.zstd_stored_bytes = analysis
+            .zstd_stored_bytes
+            .saturating_add(SHARD_HEADER_SIZE as u64);
+    }
+    Ok(())
+}
+
 async fn gc_plan(
     store: &Store,
     catalog: &Catalog,
@@ -643,7 +891,7 @@ mod tests {
     use clap::Parser;
     use shardpack_format::{ShardWriter, WriterOptions};
 
-    use super::{Cli, Codec, Command, run};
+    use super::{Cli, Codec, Command, CompressionAnalysis, analyze_block, run};
 
     #[test]
     fn parses_safe_gc_and_operational_commands() {
@@ -659,6 +907,33 @@ mod tests {
 
         let cli = Cli::try_parse_from(["shardpack", "gc-apply", "--yes"]).unwrap();
         assert!(matches!(cli.command, Command::GcApply { yes: true, .. }));
+
+        let cli = Cli::try_parse_from([
+            "shardpack",
+            "analyze-compression",
+            "layouts/example.layout.pb",
+            "--sample-records",
+            "500",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::AnalyzeCompression {
+                sample_records: 500,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn compression_analysis_includes_framing_and_detects_compressible_payloads() {
+        let mut analysis = CompressionAnalysis::default();
+        let mut compressor = zrip::CompressContext::new(1).unwrap();
+        compressor.set_content_checksum(false);
+        analyze_block(&mut analysis, &mut compressor, &vec![b'x'; 1024 * 1024], 16).unwrap();
+        assert_eq!(analysis.blocks, 1);
+        assert!(analysis.none_stored_bytes > 1024 * 1024);
+        assert!(analysis.savings_percent() > 90.0);
     }
 
     #[tokio::test]

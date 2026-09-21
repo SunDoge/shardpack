@@ -22,6 +22,7 @@ shardpack-runtime = { path = "../shardpack-runtime" }
 shardpack-storage = { path = "../shardpack-storage" }
 snafu.workspace = true
 tokio.workspace = true
+zrip.workspace = true
 [lints]
 workspace = true
 [dev-dependencies]

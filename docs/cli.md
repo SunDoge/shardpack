@@ -35,6 +35,25 @@ object writer to roughly 128 MiB of buffered data. Tune them with
 `verify` sequentially reads every referenced shard and checks headers, block CRCs,
 record counts, content fingerprints, byte sizes, and exact BLAKE3 shard IDs.
 
+`analyze-compression` samples decoded record payloads from an existing layout,
+re-packs them using the layout's target block size, and reports the estimated
+on-wire sizes for `None` and Zstd level 1. Directory and block framing overhead
+is included. The command is read-only and defaults to at most 10,000 records or
+1 GiB of payload, whichever is reached first:
+
+```bash
+shardpack --root ./dataset analyze-compression \
+  layouts/<layout-id>.layout.pb
+```
+
+The default recommendation requires at least 10% estimated savings. Override
+sampling, block size, compression level, or the policy threshold with
+`--sample-records`, `--sample-bytes`, `--target-block-bytes`, `--zstd-level`,
+and `--minimum-savings-percent`. Sampling estimates storage and transfer savings;
+it does not claim that Zstd improves training throughput. Media-heavy layouts
+should normally remain uncompressed unless their real payload sample clears the
+chosen threshold.
+
 `import` creates a durable, self-contained snapshot and layout around existing
 `.spk` objects. It reads every shard before publication. Record schema IDs are
 64 hexadecimal characters; an optional embedded schema file is copied into the

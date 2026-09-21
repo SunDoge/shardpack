@@ -162,6 +162,25 @@ source comparison at 522.8 MiB/s. A warm-cache run reached 797.2 MiB/s,
 payload pass. The cold/warm gap reflects opening 123k source files; sequential
 ShardPack reads avoid that small-file I/O pattern.
 
+The compression analyzer was also run over a self-contained, uncompressed
+COCO `val2017` layout. Its 5,000 records contained 814,705,164 JPEG bytes and
+834,534,171 total payload bytes, so JSON annotations and record framing were
+about 2.4% of the payload. Repacking the sample into 51 16 MiB blocks produced
+the following estimate:
+
+```text
+none_estimated_bytes=834657499
+zstd_estimated_bytes=834355893
+zstd_ratio=0.999639
+savings_percent=0.036
+recommendation=none threshold_percent=10.000
+```
+
+Zstd saved only 301,606 bytes (about 295 KiB). Compressible annotations did not
+offset the cost and negligible size benefit of passing the dominant JPEG data
+through block compression. This supports `None` as the default for media-heavy
+and ordinary image-plus-metadata layouts.
+
 ## RustFS / S3-compatible storage
 
 The retained loopback benchmark transfers a 256 MiB object:
