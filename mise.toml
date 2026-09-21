@@ -22,3 +22,8 @@ run = [
 description = "Build the abi3 manylinux 2.17 Python wheel with Zig"
 dir = "{{config_root}}/python"
 run = "uv run maturin build --release --zig --compatibility manylinux_2_17 --out dist"
+
+[tasks."test:python-torch"]
+description = "Run the real multi-process PyTorch DataLoader integration test"
+depends = ["build:python"]
+run = "./scripts/test-python-torch.sh"

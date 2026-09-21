@@ -157,6 +157,7 @@ loader = torch.utils.data.DataLoader(
     batch_size=128,
     num_workers=8,
     pin_memory=True,
+    multiprocessing_context="spawn",
 )
 ```
 
@@ -165,6 +166,11 @@ to `RANK` and `WORLD_SIZE`, then combines them with DataLoader worker identity.
 The Rust reader assigns whole shards so ranks and workers are disjoint without
 sample-level range requests. Native store/runtime state is constructed inside
 each worker and never crosses `fork`.
+
+`multiprocessing_context="spawn"` is recommended. It avoids forking a process
+after PyTorch or another native library has created threads, at the cost of worker
+startup time. Consequently, `decode` must be a picklable module-level callable;
+do not use a lambda or nested function when workers use `spawn`.
 
 Call `source.set_epoch(epoch)` before constructing each epoch iterator to change
 the deterministic shard order. With `persistent_workers=True`, mutations in the
