@@ -88,6 +88,27 @@ for record in dataset.records(
     consume(record.flags, record.payload)
 ```
 
+`record.payload` is a read-only, C-contiguous `memoryview` over the Rust `Bytes`
+allocation. Creating it allocates only the small Python view object; it does not
+allocate or copy the payload bytes. The view retains
+its owning `Record`, so it remains valid even if the iterator advances or the
+original Python variable is dropped. Use `bytes(record.payload)` only when a
+consumer explicitly requires an owned Python `bytes`, because that conversion
+copies.
+
+Read-only decoders can consume the memoryview directly. Be careful with
+`torch.frombuffer`: PyTorch warns that it does not enforce a source buffer's
+read-only flag and exposes a writable tensor. Never mutate such a tensor. If the
+payload represents raw tensor storage rather than an encoded asset, immediately
+clone it before handing it to code that may write:
+
+```python
+tensor = torch.frombuffer(record.payload, dtype=torch.uint8).clone()
+```
+
+For JPEG, audio, protobuf, and similar encoded records, prefer decoders that
+accept the buffer protocol so the encoded bytes stay zero-copy until decode.
+
 The iterator reads shards in deterministic shard order, validates the normal
 ShardPack checksums and identities, optionally decrypts records, and releases the
 GIL while waiting for asynchronous OpenDAL I/O. It supports shard-level

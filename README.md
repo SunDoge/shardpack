@@ -19,7 +19,7 @@ This repository is an early Rust MVP. The implemented vertical slice includes:
 - deterministic node-affine distributed shard assignment and byte-aware bounded shuffle;
 - an operational local/S3 CLI for verification, import, rebalance, pinning and GC;
 - an abi3 Python upload SDK plus a transitional PyTorch `IterableDataset` with
-  verified NVMe cache and bounded shard prefetch;
+  zero-copy payload memoryviews, verified NVMe cache and bounded shard prefetch;
 - a repeatable `/data/rustfs` S3-compatible integration test harness.
 
 The Rust core intentionally has no Lance dependency. Python/Lance is the offline

@@ -54,7 +54,7 @@ root = "{object_root}"
 
     dataset = shardpack.Dataset(config, layout_key)
     records = list(dataset.records())
-    assert {record.sample_id: (record.flags, record.payload) for record in records} == {
+    assert {record.sample_id: (record.flags, bytes(record.payload)) for record in records} == {
         bytes([0]) * 16: (3, b"alpha"),
         bytes([1]) * 16: (0, b""),
         bytes([2]) * 16: (9, b"charlie-data"),
@@ -129,10 +129,21 @@ def test_simple_record_reader_preserves_records(dataset: shardpack.Dataset) -> N
     assert dataset.record_count == 7
     assert dataset.shard_count > 1
     assert {record.sample_id for record in records} == {bytes([value]) * 16 for value in range(7)}
-    assert {record.payload for record in records} == {
+    assert {bytes(record.payload) for record in records} == {
         f"python-record-{value}".encode() for value in range(7)
     }
-    assert records[0].payload is records[0].payload
+    payload = records[0].payload
+    assert isinstance(payload, memoryview)
+    assert payload.readonly
+    assert payload.format == "B"
+    assert payload.c_contiguous
+    assert payload.obj is records[0]
+    expected_payload = bytes(payload)
+    assert bytes(memoryview(records[0])) == expected_payload
+
+    # A derived view owns the Record exporter and keeps the Rust Bytes alive.
+    del records
+    assert bytes(payload) == expected_payload
     assert loader.metrics()["prefetched_shards"] == dataset.shard_count
 
 

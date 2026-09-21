@@ -1,5 +1,7 @@
 use std::{
+    ffi::{c_int, c_void},
     path::PathBuf,
+    ptr,
     sync::{Arc, Mutex, mpsc},
     thread,
 };
@@ -7,9 +9,10 @@ use std::{
 use bytes::Bytes;
 use pyo3::{
     buffer::PyBuffer,
-    exceptions::{PyRuntimeError, PyValueError},
+    exceptions::{PyBufferError, PyRuntimeError, PyValueError},
+    ffi,
     prelude::*,
-    types::{PyAny, PyBytes, PyDict},
+    types::{PyAny, PyBytes, PyDict, PyMemoryView},
 };
 use shardpack_cache::{CacheMetrics, LocalCache};
 use shardpack_core::{
@@ -408,18 +411,15 @@ fn parse_encryption(
 struct PyRecord {
     sample_id: [u8; 16],
     flags: u32,
-    payload: Py<PyBytes>,
-    payload_len: usize,
+    payload: Bytes,
 }
 
 impl PyRecord {
-    fn from_encoded(py: Python<'_>, record: EncodedRecord) -> Self {
-        let payload_len = record.payload.len();
+    fn from_encoded(record: EncodedRecord) -> Self {
         Self {
             sample_id: record.sample_id,
             flags: record.flags,
-            payload: PyBytes::new(py, &record.payload).unbind(),
-            payload_len,
+            payload: record.payload,
         }
     }
 }
@@ -437,12 +437,12 @@ impl PyRecord {
     }
 
     #[getter]
-    fn payload(&self, py: Python<'_>) -> Py<PyBytes> {
-        self.payload.clone_ref(py)
+    fn payload<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyMemoryView>> {
+        PyMemoryView::from(slf.as_any())
     }
 
     fn __len__(&self) -> usize {
-        self.payload_len
+        self.payload.len()
     }
 
     fn __repr__(&self) -> String {
@@ -450,8 +450,56 @@ impl PyRecord {
             "Record(sample_id='{}', flags={}, payload_bytes={})",
             hex::encode(self.sample_id),
             self.flags,
-            self.payload_len
+            self.payload.len()
         )
+    }
+
+    /// Exports the immutable `Bytes` allocation without copying it into a
+    /// Python `bytes`. The buffer owns a reference to this `Record`, so the
+    /// allocation remains alive until every derived memoryview is released.
+    unsafe fn __getbuffer__(
+        slf: Bound<'_, Self>,
+        view: *mut ffi::Py_buffer,
+        flags: c_int,
+    ) -> PyResult<()> {
+        if view.is_null() {
+            return Err(PyBufferError::new_err("buffer view is null"));
+        }
+        if (flags & ffi::PyBUF_WRITABLE) == ffi::PyBUF_WRITABLE {
+            return Err(PyBufferError::new_err("record payload is read-only"));
+        }
+
+        let payload = &slf.borrow().payload;
+        // SAFETY: `view` was checked for null. `payload` belongs to `slf`, and
+        // assigning an owned reference to `view.obj` keeps `slf` alive for the
+        // exported buffer lifetime. The format string is static and all shape
+        // and stride pointers refer to fields within the stable `Py_buffer`.
+        unsafe {
+            (*view).obj = slf.clone().into_any().into_ptr();
+            (*view).buf = payload.as_ptr().cast_mut().cast::<c_void>();
+            (*view).len = payload.len() as isize;
+            (*view).readonly = 1;
+            (*view).itemsize = 1;
+            (*view).format = if (flags & ffi::PyBUF_FORMAT) == ffi::PyBUF_FORMAT {
+                c"B".as_ptr().cast_mut()
+            } else {
+                ptr::null_mut()
+            };
+            (*view).ndim = 1;
+            (*view).shape = if (flags & ffi::PyBUF_ND) == ffi::PyBUF_ND {
+                &raw mut (*view).len
+            } else {
+                ptr::null_mut()
+            };
+            (*view).strides = if (flags & ffi::PyBUF_STRIDES) == ffi::PyBUF_STRIDES {
+                &raw mut (*view).itemsize
+            } else {
+                ptr::null_mut()
+            };
+            (*view).suboffsets = ptr::null_mut();
+            (*view).internal = ptr::null_mut();
+        }
+        Ok(())
     }
 }
 
@@ -633,7 +681,7 @@ impl PyRecordLoader {
         let record = py
             .detach(|| self.runtime.block_on(self.reader.next_record()))
             .map_err(runtime_error)?;
-        Ok(record.map(|record| PyRecord::from_encoded(py, record)))
+        Ok(record.map(PyRecord::from_encoded))
     }
 
     fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {

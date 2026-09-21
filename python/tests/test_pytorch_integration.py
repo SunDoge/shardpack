@@ -13,6 +13,8 @@ DATA = Path(__file__).parent / "data"
 
 
 def decode_sample_id(record: Record) -> int:
+    assert isinstance(record.payload, memoryview)
+    assert record.payload.readonly
     return record.sample_id[0]
 
 
