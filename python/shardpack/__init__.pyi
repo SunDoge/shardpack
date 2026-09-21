@@ -13,6 +13,7 @@ class Record:
 class RecordLoader(Iterator[Record]):
     def __iter__(self) -> RecordLoader: ...
     def __next__(self) -> Record: ...
+    def metrics(self) -> dict[str, int]: ...
 
 class Dataset:
     def __init__(
@@ -34,6 +35,11 @@ class Dataset:
     def records(
         self,
         *,
+        cache_dir: str | PathLike[str] | None = None,
+        cache_max_bytes: int = 274_877_906_944,
+        cache_mode: str = "ciphertext",
+        network_concurrency: int = 2,
+        network_prefetch_bytes: int = 67_108_864,
         epoch: int = 0,
         shard_seed: int = 0,
         rank: int = 0,

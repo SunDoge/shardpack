@@ -2389,6 +2389,7 @@ dependencies = [
  "bytes",
  "hex",
  "pyo3",
+ "shardpack-cache",
  "shardpack-config",
  "shardpack-core",
  "shardpack-format",

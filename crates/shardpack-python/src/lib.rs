@@ -9,15 +9,18 @@ use pyo3::{
     buffer::PyBuffer,
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
-    types::{PyAny, PyBytes},
+    types::{PyAny, PyBytes, PyDict},
 };
+use shardpack_cache::{CacheMetrics, LocalCache};
 use shardpack_core::{
     EncodedRecord as CoreEncodedRecord, MaterializeEncryption, MaterializeOptions,
     Result as CoreResult, SourceReader, materialize_layout,
 };
 use shardpack_format::BlockCodec;
 use shardpack_manifest::proto;
-use shardpack_runtime::{DatasetReader, DistributedContext, EncodedRecord};
+use shardpack_runtime::{
+    DatasetReader, DistributedContext, EncodedRecord, NetworkPrefetch, RuntimeMetrics,
+};
 use shardpack_storage::StoreRegistry;
 
 const DEFAULT_WRITER_MAX_BATCH_BYTES: usize = 256 * 1024 * 1024;
@@ -515,10 +518,15 @@ impl PyDataset {
         &self.layout_key
     }
 
-    #[pyo3(signature = (*, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None))]
+    #[pyo3(signature = (*, cache_dir=None, cache_max_bytes=274_877_906_944, cache_mode="ciphertext", network_concurrency=2, network_prefetch_bytes=67_108_864, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None))]
     #[allow(clippy::too_many_arguments)]
     fn records(
         &self,
+        cache_dir: Option<PathBuf>,
+        cache_max_bytes: u64,
+        cache_mode: &str,
+        network_concurrency: usize,
+        network_prefetch_bytes: usize,
         epoch: u64,
         shard_seed: u64,
         rank: usize,
@@ -528,6 +536,29 @@ impl PyDataset {
         encryption_key_id: Option<String>,
         encryption_key: Option<&Bound<'_, PyBytes>>,
     ) -> PyResult<PyRecordLoader> {
+        let encryption = parse_encryption(encryption_key_id, encryption_key)?;
+        let plaintext_cache = match cache_mode {
+            "ciphertext" => false,
+            "plaintext" => true,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "cache_mode must be 'ciphertext' or 'plaintext'",
+                ));
+            }
+        };
+        if plaintext_cache && cache_dir.is_none() {
+            return Err(PyValueError::new_err(
+                "cache_mode='plaintext' requires cache_dir",
+            ));
+        }
+        if plaintext_cache && encryption.is_none() {
+            return Err(PyValueError::new_err(
+                "cache_mode='plaintext' requires encryption_key_id and encryption_key",
+            ));
+        }
+
+        let metrics = RuntimeMetrics::default();
+        let cache_metrics = cache_dir.as_ref().map(|_| CacheMetrics::default());
         let mut reader = DatasetReader::new_assigned_with_registry(
             self.stores.clone(),
             self.layout.clone(),
@@ -540,17 +571,47 @@ impl PyDataset {
                 workers_per_rank,
             },
         )
-        .map_err(runtime_error)?;
-        if let Some((key_id, key)) = parse_encryption(encryption_key_id, encryption_key)? {
+        .map_err(runtime_error)?
+        .with_metrics(metrics.clone());
+        if let Some(cache_dir) = cache_dir {
+            let mut cache = LocalCache::new(cache_dir).with_max_bytes(cache_max_bytes);
+            if plaintext_cache {
+                cache = cache.with_plaintext(
+                    encryption
+                        .as_ref()
+                        .expect("plaintext cache encryption was validated")
+                        .1
+                        .clone(),
+                );
+            }
+            if let Some(cache_metrics) = &cache_metrics {
+                cache = cache.with_metrics(cache_metrics.clone());
+            }
+            reader = reader.with_cache(cache);
+        }
+        if let Some((key_id, key)) = encryption {
             reader = reader
                 .with_decryption_key(&key_id, key)
                 .map_err(runtime_error)?;
         }
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        reader = reader
+            .with_network_prefetch(NetworkPrefetch {
+                concurrency: network_concurrency,
+                max_bytes: network_prefetch_bytes,
+            })
+            .map_err(runtime_error)?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
+            .worker_threads(network_concurrency.clamp(1, 4))
+            .thread_name("shardpack-python-reader")
             .build()
             .map_err(runtime_error)?;
-        Ok(PyRecordLoader { runtime, reader })
+        Ok(PyRecordLoader {
+            runtime,
+            reader,
+            metrics,
+            cache_metrics,
+        })
     }
 }
 
@@ -558,6 +619,8 @@ impl PyDataset {
 struct PyRecordLoader {
     runtime: tokio::runtime::Runtime,
     reader: DatasetReader,
+    metrics: RuntimeMetrics,
+    cache_metrics: Option<CacheMetrics>,
 }
 
 #[pymethods]
@@ -571,6 +634,35 @@ impl PyRecordLoader {
             .detach(|| self.runtime.block_on(self.reader.next_record()))
             .map_err(runtime_error)?;
         Ok(record.map(|record| PyRecord::from_encoded(py, record)))
+    }
+
+    fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let metrics = self.metrics.snapshot();
+        let result = PyDict::new(py);
+        result.set_item("records_read", metrics.records_read)?;
+        result.set_item("encoded_bytes_read", metrics.encoded_bytes_read)?;
+        result.set_item("shards_completed", metrics.shards_completed)?;
+        result.set_item("shard_bytes_completed", metrics.shard_bytes_completed)?;
+        result.set_item("shards_verified", metrics.shards_verified)?;
+        result.set_item("shard_bytes_verified", metrics.shard_bytes_verified)?;
+        result.set_item("prefetched_shards", metrics.prefetched_shards)?;
+        result.set_item("retries", metrics.retries)?;
+        result.set_item("checksum_failures", metrics.checksum_failures)?;
+        result.set_item(
+            "queue_backpressure_events",
+            metrics.queue_backpressure_events,
+        )?;
+        if let Some(cache_metrics) = &self.cache_metrics {
+            let cache = cache_metrics.snapshot();
+            result.set_item("cache_hits", cache.hits)?;
+            result.set_item("cache_misses", cache.misses)?;
+            result.set_item("cache_downloaded_bytes", cache.downloaded_bytes)?;
+            result.set_item("cache_corrupt_entries", cache.corrupt_entries)?;
+            result.set_item("cache_evicted_entries", cache.evicted_entries)?;
+            result.set_item("cache_evicted_bytes", cache.evicted_bytes)?;
+            result.set_item("cache_stale_partials_removed", cache.stale_partials_removed)?;
+        }
+        Ok(result)
     }
 }
 

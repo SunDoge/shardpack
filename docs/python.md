@@ -76,6 +76,11 @@ dataset = Dataset(
 )
 
 for record in dataset.records(
+    cache_dir="/local-nvme/shardpack",
+    cache_max_bytes=2 * 1024**4,
+    cache_mode="plaintext",
+    network_concurrency=4,
+    network_prefetch_bytes=512 * 1024**2,
     encryption_key_id="kms://training/key-7",
     encryption_key=key_bytes,
 ):
@@ -86,8 +91,26 @@ for record in dataset.records(
 The iterator reads shards in deterministic shard order, validates the normal
 ShardPack checksums and identities, optionally decrypts records, and releases the
 GIL while waiting for asynchronous OpenDAL I/O. It supports shard-level
-rank/worker partitioning for correctness, but deliberately provides no cache,
-prefetch, record shuffle, batching, metrics, or checkpoint surface.
+rank/worker partitioning, a verified local cache, and bounded concurrent shard
+prefetch. It deliberately provides no record shuffle, batching, or checkpoint
+surface. `loader.metrics()` reports cache hits/misses, downloaded bytes,
+prefetched and verified shards, retries, and checksum failures.
+
+The default `cache_mode="ciphertext"` stores exact remote shard bytes. For an
+encrypted layout, `cache_mode="plaintext"` authenticates and decrypts each block
+while the first epoch consumes it, atomically publishes a valid unencrypted but
+still-compressed local shard after full remote identity verification, and lets
+later epochs skip both the network and AEAD work. Plaintext cache entries are
+bound to a one-way commitment of the supplied key. Use plaintext mode only when
+the node-local disk is inside the trusted boundary.
+
+`network_prefetch_bytes` is a total byte budget shared by at most
+`network_concurrency` in-flight shards. It bounds compressed/ciphertext bytes,
+not decoded tensors. Cache population and training consume the same stream, so a
+cold epoch does not wait for a complete shard download before yielding records.
+These limits apply to each `RecordLoader`; with eight DataLoader workers, the
+node-level upper bounds are eight times the configured concurrency and byte
+budget. Tune them together rather than blindly increasing `num_workers`.
 
 Production training should integrate the Rust crates directly—especially
 `shardpack-runtime`, `shardpack-cache`, `shardpack-storage`, and
@@ -121,6 +144,11 @@ source = ShardPackDataset(
     store="training",
     decode=decode,
     shard_seed=0x5A17,
+    cache_dir="/local-nvme/shardpack",
+    cache_max_bytes=2 * 1024**4,
+    cache_mode="plaintext",
+    network_concurrency=4,
+    network_prefetch_bytes=512 * 1024**2,
     encryption_key_id="kms://training/key-7",
     encryption_key=key_bytes,
 )
@@ -144,5 +172,6 @@ parent dataset object do not propagate into existing worker copies; recreate the
 DataLoader workers or pass an explicit cross-process epoch mechanism. Shard-level
 partitioning can yield different record counts per rank, so DDP training must use
 a fixed step budget, coordinated truncation/padding, or join semantics to prevent
-collective mismatch. The transitional adapter intentionally has no Python-side
-cache or prefetch; those remain responsibilities of the forthcoming Rust loader.
+collective mismatch. The adapter now exposes the Rust verified cache and bounded
+shard prefetch, but schema decode, transforms and PyTorch collation still run in
+DataLoader workers until the dedicated Rust loader replaces this bridge.

@@ -37,6 +37,11 @@ class ShardPackDataset(IterableDataset[Any]):
         shard_seed: int = 0,
         rank: int | None = None,
         world_size: int | None = None,
+        cache_dir: str | PathLike[str] | None = None,
+        cache_max_bytes: int = 256 * 1024**3,
+        cache_mode: str = "ciphertext",
+        network_concurrency: int = 2,
+        network_prefetch_bytes: int = 64 * 1024**2,
         encryption_key_id: str | None = None,
         encryption_key: bytes | None = None,
     ) -> None:
@@ -51,6 +56,11 @@ class ShardPackDataset(IterableDataset[Any]):
         self.shard_seed = shard_seed
         self.rank = rank
         self.world_size = world_size
+        self.cache_dir = None if cache_dir is None else os.fspath(cache_dir)
+        self.cache_max_bytes = cache_max_bytes
+        self.cache_mode = cache_mode
+        self.network_concurrency = network_concurrency
+        self.network_prefetch_bytes = network_prefetch_bytes
         self.encryption_key_id = encryption_key_id
         self.encryption_key = encryption_key
 
@@ -76,6 +86,11 @@ class ShardPackDataset(IterableDataset[Any]):
         # native handles must never cross a fork boundary.
         dataset = Dataset(self.config, self.layout, self.store)
         records = dataset.records(
+            cache_dir=self.cache_dir,
+            cache_max_bytes=self.cache_max_bytes,
+            cache_mode=self.cache_mode,
+            network_concurrency=self.network_concurrency,
+            network_prefetch_bytes=self.network_prefetch_bytes,
             epoch=self.epoch,
             shard_seed=self.shard_seed,
             rank=rank,

@@ -123,7 +123,8 @@ root = "{DATA}"
 
 
 def test_simple_record_reader_preserves_records(dataset: shardpack.Dataset) -> None:
-    records = list(dataset.records())
+    loader = dataset.records()
+    records = list(loader)
 
     assert dataset.record_count == 7
     assert dataset.shard_count > 1
@@ -132,6 +133,38 @@ def test_simple_record_reader_preserves_records(dataset: shardpack.Dataset) -> N
         f"python-record-{value}".encode() for value in range(7)
     }
     assert records[0].payload is records[0].payload
+    assert loader.metrics()["prefetched_shards"] == dataset.shard_count
+
+
+def test_reader_populates_and_reuses_local_cache(
+    dataset: shardpack.Dataset, tmp_path: Path
+) -> None:
+    cache = tmp_path / "cache"
+    cold = dataset.records(cache_dir=cache)
+    cold_ids = [record.sample_id for record in cold]
+    assert cold.metrics()["cache_misses"] == dataset.shard_count
+    assert cold.metrics()["cache_downloaded_bytes"] == dataset.stored_bytes
+
+    hot = dataset.records(cache_dir=cache)
+    assert [record.sample_id for record in hot] == cold_ids
+    assert hot.metrics()["cache_hits"] == dataset.shard_count
+
+
+def test_reader_rejects_invalid_cache_and_prefetch_configuration(
+    dataset: shardpack.Dataset, tmp_path: Path
+) -> None:
+    with pytest.raises(ValueError, match="cache_mode"):
+        dataset.records(cache_mode="unknown")
+    with pytest.raises(ValueError, match="requires cache_dir"):
+        dataset.records(cache_mode="plaintext")
+    with pytest.raises(RuntimeError, match="network_concurrency"):
+        dataset.records(network_concurrency=0)
+    with pytest.raises(RuntimeError, match="network_prefetch_bytes"):
+        dataset.records(
+            cache_dir=tmp_path / "cache",
+            network_concurrency=4,
+            network_prefetch_bytes=3,
+        )
 
 
 def test_simple_reader_partitions_shards_across_distributed_consumers(
@@ -237,3 +270,22 @@ root = "{DATA}"
         )
     )
     assert len(records) == 7
+
+    plaintext_cache = tmp_path_factory.mktemp("plaintext-cache")
+    cold = dataset.records(
+        cache_dir=plaintext_cache,
+        cache_mode="plaintext",
+        encryption_key_id="test://python-key",
+        encryption_key=bytes([0x77]) * 32,
+    )
+    cold_ids = [record.sample_id for record in cold]
+    assert cold.metrics()["cache_misses"] == dataset.shard_count
+
+    hot = dataset.records(
+        cache_dir=plaintext_cache,
+        cache_mode="plaintext",
+        encryption_key_id="test://python-key",
+        encryption_key=bytes([0x77]) * 32,
+    )
+    assert [record.sample_id for record in hot] == cold_ids
+    assert hot.metrics()["cache_hits"] == dataset.shard_count
