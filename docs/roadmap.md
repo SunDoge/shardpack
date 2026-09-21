@@ -72,7 +72,7 @@
   hits/misses, downloaded bytes, corruption, true access-recency eviction and stale
   cleanup. Plain snapshots are vendor-neutral and can be exported by the host
   telemetry stack.
-- Done: optional encrypted v2 shards protect the directory and compressed payload
+- Done: optional encrypted v1 blocks protect the directory and compressed payload
   with AWS-LC AES-256-GCM, external key IDs, per-shard derived keys, block-boundary
   recovery, zeroized in-process keys, and a retained cross-provider throughput bench.
 - Done: abi3 Python SDK managed by uv/maturin with typed record and batch iterators,

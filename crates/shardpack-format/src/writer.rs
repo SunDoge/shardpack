@@ -3,7 +3,7 @@ use std::io::Write;
 use snafu::ResultExt;
 
 use crate::{
-    BlockCodec, BlockHeader, ContentFingerprint, ENCRYPTED_FORMAT_VERSION, EncryptionAlgorithm,
+    BlockCodec, BlockHeader, ContentFingerprint, EncryptionAlgorithm, FORMAT_VERSION,
     RECORD_ENTRY_SIZE, RecordEntry, Result, ShardHeader,
     checksum::{crc32c, crc32c_slices},
     encryption,
@@ -104,11 +104,7 @@ impl<W: Write> ShardWriter<W> {
         let encrypted = writer.encryption_key.is_some();
         writer.write_exact(
             &ShardHeader {
-                version: if encrypted {
-                    ENCRYPTED_FORMAT_VERSION
-                } else {
-                    crate::FORMAT_VERSION
-                },
+                version: FORMAT_VERSION,
                 flags: u16::from(encrypted),
                 ..ShardHeader::default()
             }
@@ -203,19 +199,22 @@ impl<W: Write> ShardWriter<W> {
         } else {
             0
         };
-        let body_bytes = if encrypted {
-            self.directory
-                .len()
-                .checked_add(stored.len())
-                .and_then(|size| size.checked_add(encryption::AEAD_TAG_BYTES))
-                .ok_or(crate::Error::InvalidRecord {
-                    reason: "encrypted block size overflow",
-                })?
-        } else {
-            stored.len()
-        };
+        let body_bytes = self
+            .directory
+            .len()
+            .checked_add(stored.len())
+            .and_then(|size| {
+                size.checked_add(if encrypted {
+                    encryption::AEAD_TAG_BYTES
+                } else {
+                    0
+                })
+            })
+            .ok_or(crate::Error::InvalidRecord {
+                reason: "stored block body size overflow",
+            })?;
         let mut header = BlockHeader {
-            version: if encrypted { 2 } else { 1 },
+            version: FORMAT_VERSION,
             flags: u16::from(
                 self.entries.len() == 1
                     && self
@@ -234,7 +233,7 @@ impl<W: Write> ShardWriter<W> {
                     reason: "directory exceeds u32 size",
                 }
             })?,
-            stored_payload_bytes: body_bytes as u64,
+            stored_body_bytes: body_bytes as u64,
             raw_payload_bytes: self.payload.len() as u64,
             codec: self.options.codec,
             encryption: if encrypted {

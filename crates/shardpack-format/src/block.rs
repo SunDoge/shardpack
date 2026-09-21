@@ -9,7 +9,7 @@ pub struct BlockHeader {
     pub flags: u16,
     pub record_count: u32,
     pub directory_bytes: u32,
-    pub stored_payload_bytes: u64,
+    pub stored_body_bytes: u64,
     pub raw_payload_bytes: u64,
     pub codec: BlockCodec,
     pub encryption: EncryptionAlgorithm,
@@ -27,7 +27,7 @@ impl BlockHeader {
         out[10..12].copy_from_slice(&self.flags.to_le_bytes());
         out[12..16].copy_from_slice(&self.record_count.to_le_bytes());
         out[16..20].copy_from_slice(&self.directory_bytes.to_le_bytes());
-        out[20..28].copy_from_slice(&self.stored_payload_bytes.to_le_bytes());
+        out[20..28].copy_from_slice(&self.stored_body_bytes.to_le_bytes());
         out[28..36].copy_from_slice(&self.raw_payload_bytes.to_le_bytes());
         out[36] = self.codec as u8;
         out[37] = self.encryption as u8;
@@ -45,7 +45,7 @@ impl BlockHeader {
             });
         }
         let version = u16::from_le_bytes(bytes[8..10].try_into().expect("fixed slice"));
-        if version != 1 && version != 2 {
+        if version != crate::FORMAT_VERSION {
             return Err(Error::UnsupportedVersion { version });
         }
         let expected = u32::from_le_bytes(bytes[56..60].try_into().expect("fixed slice"));
@@ -67,13 +67,9 @@ impl BlockHeader {
                 reason: "invalid jumbo block flags",
             });
         }
-        if (version == 1 && encryption != EncryptionAlgorithm::None)
-            || (version == 2 && encryption != EncryptionAlgorithm::Aes256Gcm)
-            || (encryption == EncryptionAlgorithm::None
-                && (key_salt != [0; 16] || nonce_counter != 0))
-        {
+        if encryption == EncryptionAlgorithm::None && (key_salt != [0; 16] || nonce_counter != 0) {
             return Err(Error::InvalidBlockHeader {
-                reason: "version, encryption, or nonce combination is invalid",
+                reason: "unencrypted block has key or nonce material",
             });
         }
         Ok(Self {
@@ -81,9 +77,7 @@ impl BlockHeader {
             flags,
             record_count,
             directory_bytes: u32::from_le_bytes(bytes[16..20].try_into().expect("fixed slice")),
-            stored_payload_bytes: u64::from_le_bytes(
-                bytes[20..28].try_into().expect("fixed slice"),
-            ),
+            stored_body_bytes: u64::from_le_bytes(bytes[20..28].try_into().expect("fixed slice")),
             raw_payload_bytes: u64::from_le_bytes(bytes[28..36].try_into().expect("fixed slice")),
             codec: BlockCodec::try_from(bytes[36])?,
             encryption,
@@ -106,7 +100,7 @@ mod tests {
             flags: 0,
             record_count: 1,
             directory_bytes: 24,
-            stored_payload_bytes: 1,
+            stored_body_bytes: 1,
             raw_payload_bytes: 1,
             codec: BlockCodec::None,
             encryption: EncryptionAlgorithm::None,
@@ -135,6 +129,17 @@ mod tests {
             Err(Error::InvalidBlockHeader {
                 reason: "invalid jumbo block flags"
             })
+        ));
+    }
+
+    #[test]
+    fn rejects_a_separate_encrypted_format_version() {
+        let mut encrypted = header();
+        encrypted.version = 2;
+        encrypted.encryption = EncryptionAlgorithm::Aes256Gcm;
+        assert!(matches!(
+            BlockHeader::decode(&encrypted.encode()),
+            Err(Error::UnsupportedVersion { version: 2 })
         ));
     }
 }

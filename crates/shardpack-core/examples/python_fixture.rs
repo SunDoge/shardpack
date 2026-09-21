@@ -37,7 +37,7 @@ async fn main() {
         &root,
         &MaterializeOptions {
             store_id: "local".into(),
-            target_shard_bytes: 48,
+            target_shard_bytes: 128,
             target_block_bytes: 32,
             block_codec: BlockCodec::None,
             object_prefix: "shards".into(),
@@ -64,7 +64,7 @@ async fn main() {
         &root,
         &MaterializeOptions {
             store_id: "local".into(),
-            target_shard_bytes: 48,
+            target_shard_bytes: 128,
             target_block_bytes: 32,
             block_codec: BlockCodec::None,
             object_prefix: "encrypted/shards".into(),

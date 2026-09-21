@@ -1,4 +1,4 @@
-# ShardPack binary format v1 and encrypted v2
+# ShardPack binary format v1
 
 For an implementation-oriented diagram, see
 [How to parse a `.spk` shard](spk-parsing.md).
@@ -13,8 +13,8 @@ payload sizes do not exactly consume the raw payload.
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 8 | magic: `SPKSHRD\0` |
-| 8 | 2 | format version (`1` plaintext, `2` encrypted) |
-| 10 | 2 | flags (`0` for v1, bit 0 set for v2) |
+| 8 | 2 | format version (`1`) |
+| 10 | 2 | flags (bit 0 means encrypted) |
 | 12 | 4 | header size (`64`) |
 | 16 | 2 | layout fragment version |
 | 18 | 42 | reserved |
@@ -27,25 +27,26 @@ The header is followed immediately by zero or more blocks. There is no footer.
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 8 | magic: `SPKBLK\0\0` |
-| 8 | 2 | block version (`1` plaintext, `2` encrypted) |
+| 8 | 2 | block version (`1`) |
 | 10 | 2 | flags; bit 0 marks a jumbo block |
 | 12 | 4 | record count |
 | 16 | 4 | directory bytes |
-| 20 | 8 | stored payload bytes |
+| 20 | 8 | stored body bytes |
 | 28 | 8 | raw payload bytes |
 | 36 | 1 | codec (`0=None`, `1=Zstd`) |
 | 37 | 1 | encryption (`0=None`, `1=AES-256-GCM`) |
 | 38 | 16 | per-shard key-derivation salt (zero for v1) |
 | 54 | 2 | per-shard block nonce counter (zero for v1) |
 | 56 | 4 | CRC32C of bytes `[0, 56)` |
-| 60 | 4 | CRC32C of directory concatenated with stored payload |
+| 60 | 4 | CRC32C of the complete physical block body |
 
-For v1, the block body is `directory || stored_payload`; the directory is not
-compressed. For encrypted v2, the plaintext body is the same concatenation, but the
-entire body—including SampleIds, sizes, flags, and compressed payload—is encrypted
-and followed by a 16-byte authentication tag. In v2, `stored_payload_bytes` is the
-physical encrypted-body size including the tag. CRC32C covers the physical body,
-allowing fast transport-corruption detection before authenticated decryption.
+The plaintext block body is `directory || stored_payload`; the directory is not
+compressed. With encryption, that complete concatenation—including SampleIds,
+sizes, flags, and compressed payload—is encrypted and followed by a 16-byte
+authentication tag. `stored_body_bytes` always gives the complete physical body
+length: plaintext bytes for an unencrypted block, or ciphertext plus tag for an
+encrypted block. CRC32C covers that physical body, allowing fast transport-
+corruption detection before authenticated decryption.
 
 AES-GCM authenticates block-header bytes `[0, 56)` as associated data. A fresh
 128-bit salt is generated per shard. The supplied 256-bit master key and salt derive
@@ -54,8 +55,9 @@ nonce unique under that derived key. An encrypted shard is therefore limited to
 65,536 blocks (1 TiB with 16 MiB blocks), well above the recommended shard target.
 The master key and key-management URI are never written into a shard.
 
-CRC32C is not a security primitive. For v2, authenticity and confidentiality come
-from AES-256-GCM; any wrong key or modified authenticated bytes fail closed.
+CRC32C is not a security primitive. For encrypted blocks, authenticity and
+confidentiality come from AES-256-GCM; any wrong key or modified authenticated
+bytes fail closed.
 
 CRC32C uses a runtime-selected accelerated implementation: SSE4.2 on x86_64,
 the CRC extension on little-endian AArch64, and a slice-by-8 portable fallback.
@@ -103,6 +105,6 @@ The authoritative v1 uncompressed golden vector lives at
 `fuzz/fuzz_targets/parse_shard.rs`, `parse_encrypted_shard.rs`, and
 `parse_manifest.rs` deliberately use bounded parser limits.
 
-Encryption is optional. Plaintext writers continue to emit byte-for-byte-compatible
-v1 shards. Encrypted writers emit v2; v1-only readers reject them as an unsupported
-version rather than interpreting ciphertext as records.
+Encryption is optional and does not create another format version. Readers use the
+shard flag and block encryption field to select the authenticated-decryption path;
+unknown flags or algorithms are rejected rather than interpreted as plaintext.

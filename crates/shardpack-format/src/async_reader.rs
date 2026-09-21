@@ -232,9 +232,9 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             u64::from(self.limits.max_records_per_block),
         )?;
         check_limit(
-            "stored_payload_bytes",
-            header.stored_payload_bytes,
-            self.limits.max_stored_payload_bytes,
+            "stored_body_bytes",
+            header.stored_body_bytes,
+            self.limits.max_stored_body_bytes,
         )?;
         check_limit(
             "raw_payload_bytes",
@@ -252,84 +252,59 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
                 reason: "directory size does not match record count",
             });
         }
-        let stored_size = usize::try_from(header.stored_payload_bytes).map_err(|_| {
-            Error::InvalidBlockHeader {
-                reason: "stored payload too large for platform",
-            }
-        })?;
+        let stored_body_size =
+            usize::try_from(header.stored_body_bytes).map_err(|_| Error::InvalidBlockHeader {
+                reason: "stored block body too large for platform",
+            })?;
         let raw_size =
             usize::try_from(header.raw_payload_bytes).map_err(|_| Error::InvalidBlockHeader {
                 reason: "raw payload too large for platform",
             })?;
-        let (directory, stored, physical_body_bytes) =
-            if header.encryption == crate::EncryptionAlgorithm::None {
-                let body_size = expected_directory.checked_add(stored_size).ok_or(
-                    Error::InvalidBlockHeader {
-                        reason: "block body size overflow",
-                    },
-                )?;
-                let mut body = vec![0; body_size];
-                self.input
-                    .read_exact(&mut body)
-                    .await
-                    .map_err(map_block_read_error)?;
-                if crc32c(&body) != header.payload_crc32c {
-                    return Err(Error::PayloadChecksumMismatch);
-                }
-                let body = bytes::Bytes::from(body);
-                (
-                    body.slice(..expected_directory),
-                    body.slice(expected_directory..),
-                    header.directory_bytes as u64 + header.stored_payload_bytes,
-                )
-            } else {
-                let mut body = vec![0; stored_size];
-                self.input
-                    .read_exact(&mut body)
-                    .await
-                    .map_err(map_block_read_error)?;
-                if crc32c(&body) != header.payload_crc32c {
-                    return Err(Error::PayloadChecksumMismatch);
-                }
-                if self
-                    .derived_decryption_key
+        let mut body = vec![0; stored_body_size];
+        self.input
+            .read_exact(&mut body)
+            .await
+            .map_err(map_block_read_error)?;
+        if crc32c(&body) != header.payload_crc32c {
+            return Err(Error::PayloadChecksumMismatch);
+        }
+        if header.encryption != crate::EncryptionAlgorithm::None {
+            if self
+                .derived_decryption_key
+                .as_ref()
+                .is_none_or(|(salt, _)| salt != &header.key_salt)
+            {
+                let key = self
+                    .decryption_key
                     .as_ref()
-                    .is_none_or(|(salt, _)| salt != &header.key_salt)
-                {
-                    let key = self
-                        .decryption_key
-                        .as_ref()
-                        .ok_or(Error::MissingDecryptionKey)?
-                        .derive_for_shard(&header.key_salt);
-                    self.derived_decryption_key = Some((header.key_salt, key));
-                }
-                let key = &self
-                    .derived_decryption_key
-                    .as_ref()
-                    .expect("derived key was initialized")
-                    .1;
-                encryption::decrypt(
-                    key,
-                    &encryption::block_nonce(header.nonce_counter),
-                    &raw_header[..56],
-                    &mut body,
-                )?;
-                if body.len() < expected_directory {
-                    return Err(Error::InvalidDirectory {
-                        reason: "encrypted body is shorter than directory",
-                    });
-                }
-                let body = bytes::Bytes::from(body);
-                (
-                    body.slice(..expected_directory),
-                    body.slice(expected_directory..),
-                    header.stored_payload_bytes,
-                )
-            };
+                    .ok_or(Error::MissingDecryptionKey)?
+                    .derive_for_shard(&header.key_salt);
+                self.derived_decryption_key = Some((header.key_salt, key));
+            }
+            let key = &self
+                .derived_decryption_key
+                .as_ref()
+                .expect("derived key was initialized")
+                .1;
+            encryption::decrypt(
+                key,
+                &encryption::block_nonce(header.nonce_counter),
+                &raw_header[..56],
+                &mut body,
+            )?;
+        }
+        if body.len() < expected_directory {
+            return Err(Error::InvalidDirectory {
+                reason: "stored body is shorter than directory",
+            });
+        }
+        let body = bytes::Bytes::from(body);
+        let directory = body.slice(..expected_directory);
+        let stored = body.slice(expected_directory..);
         self.byte_offset = self
             .byte_offset
             .checked_add(BLOCK_HEADER_SIZE as u64)
-            .and_then(|value| value.checked_add(physical_body_bytes))
+            .and_then(|value| value.checked_add(header.stored_body_bytes))
             .ok_or(Error::InvalidBlockHeader {
                 reason: "block offset overflow",
             })?;

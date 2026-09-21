@@ -11,9 +11,9 @@ flowchart LR
     file([".spk byte stream"])
     shard["ShardHeader<br/><b>64 bytes</b><br/>magic = SPKSHRD\\0"]
     bh1["BlockHeader 0<br/><b>64 bytes</b>"]
-    body1["BlockBody 0<br/>v1: directory_bytes + stored_payload_bytes<br/>v2: stored_payload_bytes"]
+    body1["BlockBody 0<br/><b>stored_body_bytes</b>"]
     bh2["BlockHeader 1<br/><b>64 bytes</b>"]
-    body2["BlockBody 1<br/>v1: directory_bytes + stored_payload_bytes<br/>v2: stored_payload_bytes"]
+    body2["BlockBody 1<br/><b>stored_body_bytes</b>"]
     more["… repeat until clean EOF"]
 
     file --> shard --> bh1 --> body1 --> bh2 --> body2 --> more
@@ -50,7 +50,7 @@ flowchart TB
         bh2["10..12<br/>flags"]
         bh3["12..16<br/>record_count"]
         bh4["16..20<br/>directory_bytes"]
-        bh5["20..28<br/>stored_payload_bytes"]
+        bh5["20..28<br/>stored_body_bytes"]
         bh6["28..36<br/>raw_payload_bytes"]
         bh7["36<br/>codec"]
         bh8["37<br/>encryption"]
@@ -67,9 +67,9 @@ flowchart TB
     class sh6,bh11,bh12 checksum;
 ```
 
-Shard version `1` means plaintext and flags `0`. Version `2` means encrypted and
-flags `1`. Block codec `0` is none and `1` is Zstd. Block encryption `0` is none
-and `1` is AES-256-GCM. Block flag bit 0 means a one-record jumbo block.
+Shard and block version are always `1`. Shard flag bit 0 selects encryption.
+Block codec `0` is none and `1` is Zstd. Block encryption `0` is none and `1` is
+AES-256-GCM. Block flag bit 0 means a one-record jumbo block.
 
 ## Decode one block
 
@@ -78,9 +78,7 @@ flowchart TD
     start(["Read exactly 64 bytes"])
     header["Decode BlockHeader<br/>validate magic, version, flags and limits"]
     hcrc{"CRC32C(header[0..56])<br/>matches bytes 56..60?"}
-    encrypted{"encryption == AES-256-GCM?"}
-    readplain["Read directory_bytes<br/>+ stored_payload_bytes"]
-    readencrypted["Read stored_payload_bytes<br/>(ciphertext + 16-byte tag)"]
+    readbody["Read exactly stored_body_bytes"]
     bcrc{"CRC32C(physical body)<br/>matches bytes 60..64?"}
     derive["Derive per-shard key<br/>master key + key_salt"]
     decrypt["Nonce = 10 zero bytes +<br/>nonce_counter as big-endian u16<br/>AAD = header[0..56]<br/>decrypt and remove 16-byte tag"]
@@ -97,9 +95,7 @@ flowchart TD
 
     start --> header --> hcrc
     hcrc -- no --> fail
-    hcrc -- yes --> encrypted
-    encrypted -- no --> readplain --> bcrc
-    encrypted -- yes --> readencrypted --> bcrc
+    hcrc -- yes --> readbody --> bcrc
     bcrc -- no --> fail
     bcrc -- yes --> encrypted2{"encrypted?"}
     encrypted2 -- yes --> derive --> decrypt --> plain
@@ -129,9 +125,9 @@ For encrypted blocks, the physical body is:
 AES-GCM(directory || stored_payload) || authentication_tag[16]
 ```
 
-`stored_payload_bytes` is the length of the whole physical body in the encrypted
-case, including the tag. After decryption, split the plaintext at
-`directory_bytes`.
+`stored_body_bytes` is always the length of the complete physical body. In the
+encrypted case it includes the authentication tag. After optional decryption,
+split the plaintext at `directory_bytes`.
 
 ## Directory to records
 

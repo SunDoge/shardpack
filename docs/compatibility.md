@@ -4,7 +4,7 @@ ShardPack has two independently versioned surfaces.
 
 | Surface | Current | Reader guarantee | Writer behavior |
 |---|---:|---|---|
-| Binary shard container | 1, 2 | Reads plaintext v1 and AES-256-GCM v2; rejects unknown versions, algorithms and flags | Writes v1 by default; v2 only when encryption is explicit |
+| Binary shard container | 1 | Reads plaintext and AES-256-GCM blocks under one v1 framing; rejects unknown versions, algorithms and flags | Writes v1; encryption is selected by flags and the block algorithm field |
 | Protobuf manifest package | `shardpack.v1` | Reads old v1 messages with absent optional fields and safely ignores unknown fields | Writes v1 using only assigned field numbers |
 | Record codec/schema | Per snapshot | Determined by codec name, codec version, and schema ID | No implicit schema conversion |
 
@@ -12,7 +12,7 @@ Binary headers carry explicit format versions. Adding a codec does not change th
 container version, but changing framing, checksum coverage, or directory entry
 semantics does. Readers fail closed on unsupported versions.
 
-Encrypted v2 requires an externally supplied key matching the layout manifest's
+Encrypted v1 requires an externally supplied key matching the layout manifest's
 `encryption.key_id`. The key is an authorization secret, not a canonical-data
 dependency: `SelfContained` still means no Lance rows, raw objects, annotation DB,
 or other data is required once the caller is authorized. Key rotation is a physical

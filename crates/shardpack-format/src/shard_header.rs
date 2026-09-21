@@ -1,4 +1,4 @@
-use crate::{ENCRYPTED_FORMAT_VERSION, Error, FORMAT_VERSION, Result, checksum::crc32c};
+use crate::{Error, FORMAT_VERSION, Result, checksum::crc32c};
 
 pub const SHARD_HEADER_SIZE: usize = 64;
 const MAGIC: &[u8; 8] = b"SPKSHRD\0";
@@ -41,7 +41,7 @@ impl ShardHeader {
             });
         }
         let version = u16::from_le_bytes(bytes[8..10].try_into().expect("fixed slice"));
-        if version != FORMAT_VERSION && version != ENCRYPTED_FORMAT_VERSION {
+        if version != FORMAT_VERSION {
             return Err(Error::UnsupportedVersion { version });
         }
         if u32::from_le_bytes(bytes[12..16].try_into().expect("fixed slice")) as usize
@@ -56,11 +56,9 @@ impl ShardHeader {
             return Err(Error::HeaderChecksumMismatch);
         }
         let flags = u16::from_le_bytes(bytes[10..12].try_into().expect("fixed slice"));
-        if (version == FORMAT_VERSION && flags != 0)
-            || (version == ENCRYPTED_FORMAT_VERSION && flags != 1)
-        {
+        if flags & !1 != 0 {
             return Err(Error::InvalidShardHeader {
-                reason: "version and flags are inconsistent",
+                reason: "unsupported shard flags",
             });
         }
         Ok(Self {
@@ -70,5 +68,33 @@ impl ShardHeader {
                 bytes[16..18].try_into().expect("fixed slice"),
             ),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Error, FORMAT_VERSION};
+
+    use super::ShardHeader;
+
+    #[test]
+    fn one_version_covers_plaintext_and_encrypted_flags() {
+        for flags in [0, 1] {
+            let header = ShardHeader {
+                version: FORMAT_VERSION,
+                flags,
+                layout_fragment_version: 1,
+            };
+            assert_eq!(ShardHeader::decode(&header.encode()).unwrap(), header);
+        }
+
+        let unsupported = ShardHeader {
+            version: 2,
+            ..Default::default()
+        };
+        assert!(matches!(
+            ShardHeader::decode(&unsupported.encode()),
+            Err(Error::UnsupportedVersion { version: 2 })
+        ));
     }
 }

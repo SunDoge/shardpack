@@ -165,7 +165,7 @@ async fn exercise_portable_lifecycle(
     let header_end = header_start + BLOCK_HEADER_SIZE;
     let raw_header: [u8; BLOCK_HEADER_SIZE] = bytes[header_start..header_end].try_into().unwrap();
     let block = BlockHeader::decode(&raw_header).unwrap();
-    let first_block_end = header_end + block.stored_payload_bytes as usize;
+    let first_block_end = header_end + block.stored_body_bytes as usize;
     assert!(first_block_end < bytes.len());
     std::fs::write(
         filesystem_root.join(&shardpack_manifest::object_location(shard).object_key),

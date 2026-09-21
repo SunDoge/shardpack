@@ -25,7 +25,6 @@ pub use shard_header::{SHARD_HEADER_SIZE, ShardHeader};
 pub use writer::{ShardSummary, ShardWriter, WriterOptions};
 
 pub const FORMAT_VERSION: u16 = 1;
-pub const ENCRYPTED_FORMAT_VERSION: u16 = 2;
 
 mod error {
     #[derive(Debug, snafu::Snafu)]

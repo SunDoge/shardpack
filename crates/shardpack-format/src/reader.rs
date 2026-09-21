@@ -18,7 +18,7 @@ pub struct Record {
 #[derive(Clone, Copy, Debug)]
 pub struct ReaderLimits {
     pub max_records_per_block: u32,
-    pub max_stored_payload_bytes: u64,
+    pub max_stored_body_bytes: u64,
     pub max_raw_payload_bytes: u64,
 }
 
@@ -26,7 +26,7 @@ impl Default for ReaderLimits {
     fn default() -> Self {
         Self {
             max_records_per_block: 1_000_000,
-            max_stored_payload_bytes: 8 * 1024 * 1024 * 1024,
+            max_stored_body_bytes: 8 * 1024 * 1024 * 1024,
             max_raw_payload_bytes: 8 * 1024 * 1024 * 1024,
         }
     }
@@ -151,9 +151,9 @@ impl<R: Read> ShardReader<R> {
             u64::from(self.limits.max_records_per_block),
         )?;
         check_limit(
-            "stored_payload_bytes",
-            header.stored_payload_bytes,
-            self.limits.max_stored_payload_bytes,
+            "stored_body_bytes",
+            header.stored_body_bytes,
+            self.limits.max_stored_body_bytes,
         )?;
         check_limit(
             "raw_payload_bytes",
@@ -171,42 +171,22 @@ impl<R: Read> ShardReader<R> {
                 reason: "directory size does not match record count",
             });
         }
-        let stored_size = usize::try_from(header.stored_payload_bytes).map_err(|_| {
-            Error::InvalidBlockHeader {
-                reason: "stored payload too large for platform",
-            }
-        })?;
+        let stored_body_size =
+            usize::try_from(header.stored_body_bytes).map_err(|_| Error::InvalidBlockHeader {
+                reason: "stored block body too large for platform",
+            })?;
         let raw_size =
             usize::try_from(header.raw_payload_bytes).map_err(|_| Error::InvalidBlockHeader {
                 reason: "raw payload too large for platform",
             })?;
-        let (directory, stored) = if header.encryption == crate::EncryptionAlgorithm::None {
-            let body_size =
-                expected_directory
-                    .checked_add(stored_size)
-                    .ok_or(Error::InvalidBlockHeader {
-                        reason: "block body size overflow",
-                    })?;
-            let mut body = vec![0; body_size];
-            self.input
-                .read_exact(&mut body)
-                .map_err(map_block_read_error)?;
-            if crc32c(&body) != header.payload_crc32c {
-                return Err(Error::PayloadChecksumMismatch);
-            }
-            let body = Bytes::from(body);
-            (
-                body.slice(..expected_directory),
-                body.slice(expected_directory..),
-            )
-        } else {
-            let mut body = vec![0; stored_size];
-            self.input
-                .read_exact(&mut body)
-                .map_err(map_block_read_error)?;
-            if crc32c(&body) != header.payload_crc32c {
-                return Err(Error::PayloadChecksumMismatch);
-            }
+        let mut body = vec![0; stored_body_size];
+        self.input
+            .read_exact(&mut body)
+            .map_err(map_block_read_error)?;
+        if crc32c(&body) != header.payload_crc32c {
+            return Err(Error::PayloadChecksumMismatch);
+        }
+        if header.encryption != crate::EncryptionAlgorithm::None {
             if self
                 .derived_decryption_key
                 .as_ref()
@@ -230,17 +210,15 @@ impl<R: Read> ShardReader<R> {
                 &raw_header[..56],
                 &mut body,
             )?;
-            if body.len() < expected_directory {
-                return Err(Error::InvalidDirectory {
-                    reason: "encrypted body is shorter than directory",
-                });
-            }
-            let body = Bytes::from(body);
-            (
-                body.slice(..expected_directory),
-                body.slice(expected_directory..),
-            )
-        };
+        }
+        if body.len() < expected_directory {
+            return Err(Error::InvalidDirectory {
+                reason: "stored body is shorter than directory",
+            });
+        }
+        let body = Bytes::from(body);
+        let directory = body.slice(..expected_directory);
+        let stored = body.slice(expected_directory..);
         let payload = header.codec.decompress(stored, raw_size)?;
         let mut offset = 0_usize;
         let (entry_chunks, remainder) = directory.as_chunks::<RECORD_ENTRY_SIZE>();
@@ -402,7 +380,15 @@ mod tests {
         .unwrap();
         writer.add_record([0xab; 16], 7, b"secret-payload").unwrap();
         let (bytes, summary) = writer.finish().unwrap();
-        assert_eq!(&bytes[8..10], &2_u16.to_le_bytes());
+        assert_eq!(&bytes[8..10], &crate::FORMAT_VERSION.to_le_bytes());
+        let block_header: [u8; BLOCK_HEADER_SIZE] = bytes
+            [SHARD_HEADER_SIZE..SHARD_HEADER_SIZE + BLOCK_HEADER_SIZE]
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            BlockHeader::decode(&block_header).unwrap().version,
+            crate::FORMAT_VERSION
+        );
         assert!(!bytes.windows(16).any(|window| window == [0xab; 16]));
         assert!(
             !bytes
@@ -493,7 +479,7 @@ mod tests {
             let header_end = offset + BLOCK_HEADER_SIZE;
             let raw_header: [u8; BLOCK_HEADER_SIZE] = bytes[offset..header_end].try_into().unwrap();
             let header = BlockHeader::decode(&raw_header).unwrap();
-            offset = header_end + header.stored_payload_bytes as usize;
+            offset = header_end + header.stored_body_bytes as usize;
             valid_boundaries.push(offset);
         }
         assert_eq!(offset, bytes.len());
@@ -527,7 +513,7 @@ mod tests {
         let mut raw_header: [u8; BLOCK_HEADER_SIZE] =
             bytes[block_offset..header_end].try_into().unwrap();
         let original_header = BlockHeader::decode(&raw_header).unwrap();
-        let body_end = header_end + original_header.stored_payload_bytes as usize;
+        let body_end = header_end + original_header.stored_body_bytes as usize;
 
         for mutation in ["nonce", "salt", "ciphertext", "tag"] {
             let mut corrupted = bytes.clone();
