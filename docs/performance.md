@@ -68,6 +68,15 @@ The zstd frame checksum is disabled because every stored block already has a
 CRC32C, encrypted blocks additionally have an AEAD tag, and full shard reads
 validate the exact BLAKE3 identity.
 
+## CDN cache sizing
+
+The generic 1 GiB shard target is efficient for direct S3 streaming but exceeds
+Cloudflare's 512 MB cacheable-object limit on non-Enterprise plans. A deployment
+through Cloudflare and Backblaze B2 should use the 384 MiB target / 480 MiB hard
+ceiling profile documented in [Cloudflare and Backblaze B2 deployment](cloudflare-b2.md).
+This preserves complete-object caching and Cloudflare-managed Range responses;
+local NVMe remains the reliable repeated-epoch cache.
+
 ## Python COCO ingestion
 
 The release-mode Python buffer writer was tested against local COCO 2017. Each

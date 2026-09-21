@@ -58,11 +58,16 @@ single-record jumbo block.
 
 Record payloads are opaque. Only the directory exposes stable 128-bit `SampleId`,
 payload size, and flags. Block codecs in v1 are `none` and `zstd`. The zstd
-writer uses zrip's reusable transfer-oriented encoder; standard frames are read
-with the reference C decoder for stronger decode throughput across data shapes.
+writer uses zrip's reusable transfer-oriented encoder; readers reuse zrip's
+decoder workspace and decompress directly into caller-owned output buffers.
 Block and shard soft-target accounting includes each record's 24-byte directory
 entry as well as its payload. Tiny or empty records therefore cannot create an
 unbounded directory or one unexpectedly enormous shard.
+
+Shard size is a layout property rather than a container constant. Generic S3
+layouts target approximately 1 GiB. Deployments that require complete-object
+Cloudflare caching use a 384 MiB soft target and a 480 MiB hard ceiling; see the
+[Cloudflare/B2 deployment profile](cloudflare-b2.md).
 
 ## Content equivalence
 

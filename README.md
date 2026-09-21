@@ -27,6 +27,7 @@ remain an adapter while the native Python loader reads ShardPack directly.
 See [architecture](docs/architecture.md), [binary format](docs/binary-format.md),
 [encryption](docs/encryption.md), [compatibility policy](docs/compatibility.md),
 [configuration](docs/configuration.md), [performance](docs/performance.md),
+[Cloudflare/B2 deployment](docs/cloudflare-b2.md),
 [CLI guide](docs/cli.md), [Python SDK](docs/python.md),
 [Python writer design](docs/python-writer.md), and the [MVP roadmap](docs/roadmap.md).
 
