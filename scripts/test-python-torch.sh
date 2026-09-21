@@ -19,6 +19,7 @@ uv pip install \
 uv pip install \
     --python "$TORCH_TEST_ENV/bin/python" \
     pytest \
+    pyfory \
     "${wheels[0]}"
 
 cd "$PROJECT_ROOT"

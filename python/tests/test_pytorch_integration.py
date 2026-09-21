@@ -1,13 +1,16 @@
 import importlib
 import shutil
+from array import array
 from pathlib import Path
 
 import pytest
 
-from shardpack import Record
+from shardpack import DatasetWriter, Record
 
 torch = pytest.importorskip("torch")
+pyfory = pytest.importorskip("pyfory")
 ShardPackDataset = importlib.import_module("shardpack.pytorch").ShardPackDataset
+FORY = pyfory.Fory()
 
 DATA = Path(__file__).parent / "data"
 
@@ -16,6 +19,12 @@ def decode_sample_id(record: Record) -> int:
     assert isinstance(record.payload, memoryview)
     assert record.payload.readonly
     return record.sample_id[0]
+
+
+def decode_fory(record: Record) -> dict[str, object]:
+    buffer = pyfory.Buffer(record.payload)
+    assert not buffer.own_data()
+    return FORY.deserialize(buffer)
 
 
 def write_config(path: Path, root: Path) -> None:
@@ -77,3 +86,53 @@ def test_real_dataloader_workers_manual_distributed_partition_and_hot_cache(
     hot = collect(ShardPackDataset(**common, rank=0, world_size=1, epoch=1))
     assert set(hot) == set(range(7))
     assert len(hot) == 7
+
+
+def test_fory_writer_to_real_dataloader_round_trip(tmp_path: Path) -> None:
+    objects = tmp_path / "fory-objects"
+    config = tmp_path / "fory.toml"
+    write_config(config, objects)
+    samples = [
+        {"index": index, "label": index % 3, "text": f"sample-{index}"} for index in range(17)
+    ]
+    encoded = [FORY.serialize(sample) for sample in samples]
+    lengths = [len(payload) for payload in encoded]
+    offsets = array("Q", [0])
+    for length in lengths:
+        offsets.append(offsets[-1] + length)
+
+    writer = DatasetWriter(
+        config,
+        bytes([0xF0]) * 32,
+        tmp_path / "fory-staging",
+        target_shard_bytes=256,
+        target_block_bytes=128,
+    )
+    writer.write_batch(
+        memoryview(b"".join(encoded)),
+        offsets,
+        memoryview(b"".join(index.to_bytes(16, "little") for index in range(len(samples)))),
+        array("I", [0] * len(samples)),
+    )
+    layout = writer.finish()
+
+    source = ShardPackDataset(
+        config,
+        layout,
+        decode=decode_fory,
+        cache_dir=tmp_path / "fory-cache",
+        network_concurrency=2,
+        network_prefetch_bytes=1024 * 1024,
+    )
+    loader = torch.utils.data.DataLoader(
+        source,
+        batch_size=4,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    decoded = {
+        int(index): (int(label), text)
+        for batch in loader
+        for index, label, text in zip(batch["index"], batch["label"], batch["text"])
+    }
+    assert decoded == {sample["index"]: (sample["label"], sample["text"]) for sample in samples}

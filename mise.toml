@@ -24,6 +24,6 @@ dir = "{{config_root}}/python"
 run = "uv run maturin build --release --zig --compatibility manylinux_2_17 --out dist"
 
 [tasks."test:python-torch"]
-description = "Run the real multi-process PyTorch DataLoader integration test"
+description = "Run real multi-process PyTorch and Fory end-to-end tests"
 depends = ["build:python"]
 run = "./scripts/test-python-torch.sh"

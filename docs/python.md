@@ -109,6 +109,27 @@ tensor = torch.frombuffer(record.payload, dtype=torch.uint8).clone()
 For JPEG, audio, protobuf, and similar encoded records, prefer decoders that
 accept the buffer protocol so the encoded bytes stay zero-copy until decode.
 
+Apache Fory 1.7 accepts the memoryview through its zero-copy `Buffer` wrapper;
+`Fory.deserialize()` itself currently accepts `bytes` or `Buffer`, not a raw
+memoryview:
+
+```python
+import pyfory
+
+fory = pyfory.Fory()
+
+
+def decode(record):
+    buffer = pyfory.Buffer(record.payload)
+    assert not buffer.own_data()  # references the Rust-backed memoryview
+    return fory.deserialize(buffer)
+```
+
+The opt-in `mise run test:python-torch` suite covers the complete path: Fory
+structured objects → packed buffer writer → ShardPack shards → cache/prefetch →
+zero-copy memoryview/`pyfory.Buffer` → Fory decode inside real spawned PyTorch
+DataLoader workers.
+
 The iterator reads shards in deterministic shard order, validates the normal
 ShardPack checksums and identities, optionally decrypts records, and releases the
 GIL while waiting for asynchronous OpenDAL I/O. It supports shard-level
