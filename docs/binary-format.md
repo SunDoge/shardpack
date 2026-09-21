@@ -1,5 +1,8 @@
 # ShardPack binary format v1 and encrypted v2
 
+For an implementation-oriented diagram, see
+[How to parse a `.spk` shard](spk-parsing.md).
+
 All integer fields are unsigned little-endian. Reserved bytes MUST be zero when
 written and ignored when read. A reader MUST reject unknown format versions,
 invalid sizes, checksum failures, truncated blocks, and record directories whose
