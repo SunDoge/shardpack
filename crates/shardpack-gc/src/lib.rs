@@ -592,6 +592,7 @@ mod tests {
                 target_block_bytes: 1,
                 block_codec: "none".into(),
                 shuffle_seed: None,
+                max_shard_bytes: None,
             }),
             portability: snapshot.portability,
             durability: snapshot.durability,

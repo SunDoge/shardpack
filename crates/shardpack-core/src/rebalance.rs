@@ -401,6 +401,16 @@ async fn materialize_layout_async_inner<S: AsyncSourceReader + Send>(
                 pending = source.next_record().await?;
             }
             let (_, summary) = writer.finish().map_err(|source| Error::Format { source })?;
+            if options
+                .max_shard_bytes
+                .is_some_and(|maximum| summary.byte_size > maximum)
+                && summary.record_count > 1
+            {
+                return Err(Error::InvalidOption {
+                    field: "max_shard_bytes",
+                    reason: "completed non-jumbo shard exceeds the hard limit; lower the soft target to leave framing headroom",
+                });
+            }
             summary
         };
         let key = shard_object_key(&options.object_prefix, &summary.shard_id);
@@ -454,6 +464,7 @@ async fn materialize_layout_async_inner<S: AsyncSourceReader + Send>(
             }
             .into(),
             shuffle_seed: options.offline_shuffle.map(|shuffle| shuffle.seed),
+            max_shard_bytes: options.max_shard_bytes,
         }),
         portability: options.portability as i32,
         durability: options.durability as i32,

@@ -23,7 +23,7 @@ References:
 Use this layout profile when complete-shard edge caching is desired:
 
 ```toml
-# Layout recipe values; this is not currently part of the storage config file.
+# Layout recipe values; these are writer/materializer options, not storage config.
 target_shard_bytes = 402653184 # 384 MiB soft target
 max_shard_bytes = 503316480    # 480 MiB hard ceiling
 target_block_bytes = 16777216  # 16 MiB
@@ -39,9 +39,10 @@ The generic S3 profile may retain its approximately 1 GiB soft target. A
 Cloudflare/B2 layout is another physical materialization of the same snapshot;
 it does not require a new snapshot or a binary-format change.
 
-The MVP currently exposes a soft shard target. Enforcing `max_shard_bytes` and
-recording cache compatibility in the layout recipe are required before this
-profile can make a strict cacheability guarantee.
+The materializer records `max_shard_bytes` in the immutable layout recipe and
+refuses to publish a non-jumbo shard that exceeds it. A hard limit should retain
+substantial headroom above the soft target because headers, directories,
+encryption tags, and compression framing are not part of the soft payload target.
 
 ## Range handling
 

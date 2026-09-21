@@ -54,6 +54,11 @@ it does not claim that Zstd improves training throughput. Media-heavy layouts
 should normally remain uncompressed unless their real payload sample clears the
 chosen threshold.
 
+Materialization and rebalance support an optional `--max-shard-bytes` hard
+ceiling for non-jumbo shard objects. For Cloudflare caching, use a 384 MiB
+`--target-shard-bytes` with a 480 MiB hard ceiling. A single oversized record is
+still emitted as a legal jumbo shard and may not be CDN-cacheable.
+
 `import` creates a durable, self-contained snapshot and layout around existing
 `.spk` objects. It reads every shard before publication. Record schema IDs are
 64 hexadecimal characters; an optional embedded schema file is copied into the

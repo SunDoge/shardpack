@@ -122,7 +122,7 @@ impl PyDatasetWriter {
 #[pymethods]
 impl PyDatasetWriter {
     #[new]
-    #[pyo3(signature = (config, snapshot_id, staging_dir, *, store=None, target_shard_bytes=1_073_741_824, target_block_bytes=16_777_216, block_codec="none", zstd_level=1, object_prefix="shards", layout_prefix="layouts", queue_batches=2, max_batch_records=DEFAULT_WRITER_MAX_BATCH_RECORDS, max_batch_bytes=DEFAULT_WRITER_MAX_BATCH_BYTES, encryption_key_id=None, encryption_key=None))]
+    #[pyo3(signature = (config, snapshot_id, staging_dir, *, store=None, target_shard_bytes=1_073_741_824, max_shard_bytes=None, target_block_bytes=16_777_216, block_codec="none", zstd_level=1, object_prefix="shards", layout_prefix="layouts", queue_batches=2, max_batch_records=DEFAULT_WRITER_MAX_BATCH_RECORDS, max_batch_bytes=DEFAULT_WRITER_MAX_BATCH_BYTES, encryption_key_id=None, encryption_key=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         config: PathBuf,
@@ -130,6 +130,7 @@ impl PyDatasetWriter {
         staging_dir: PathBuf,
         store: Option<String>,
         target_shard_bytes: u64,
+        max_shard_bytes: Option<u64>,
         target_block_bytes: usize,
         block_codec: &str,
         zstd_level: i32,
@@ -182,6 +183,7 @@ impl PyDatasetWriter {
         let options = MaterializeOptions {
             store_id,
             target_shard_bytes,
+            max_shard_bytes,
             target_block_bytes,
             block_codec,
             zstd_level,

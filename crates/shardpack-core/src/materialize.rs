@@ -38,6 +38,7 @@ pub struct MaterializeEncryption {
 pub struct MaterializeOptions {
     pub store_id: String,
     pub target_shard_bytes: u64,
+    pub max_shard_bytes: Option<u64>,
     pub target_block_bytes: usize,
     pub block_codec: BlockCodec,
     pub zstd_level: i32,
@@ -56,6 +57,7 @@ impl Default for MaterializeOptions {
         Self {
             store_id: "default".into(),
             target_shard_bytes: 1024 * 1024 * 1024,
+            max_shard_bytes: None,
             target_block_bytes: 16 * 1024 * 1024,
             block_codec: BlockCodec::None,
             zstd_level: 1,
@@ -195,6 +197,16 @@ async fn materialize_layout_inner<S: SourceReader>(
                 pending = source.next_record()?;
             }
             let (_, summary) = writer.finish().map_err(|source| Error::Format { source })?;
+            if options
+                .max_shard_bytes
+                .is_some_and(|maximum| summary.byte_size > maximum)
+                && summary.record_count > 1
+            {
+                return Err(Error::InvalidOption {
+                    field: "max_shard_bytes",
+                    reason: "completed non-jumbo shard exceeds the hard limit; lower the soft target to leave framing headroom",
+                });
+            }
             summary
         };
 
@@ -234,6 +246,7 @@ async fn materialize_layout_inner<S: SourceReader>(
             }
             .into(),
             shuffle_seed: options.offline_shuffle.map(|shuffle| shuffle.seed),
+            max_shard_bytes: options.max_shard_bytes,
         }),
         portability: options.portability as i32,
         durability: options.durability as i32,
@@ -522,6 +535,15 @@ pub(crate) fn validate_options(options: &MaterializeOptions) -> Result<()> {
             reason: "must be greater than zero",
         });
     }
+    if options
+        .max_shard_bytes
+        .is_some_and(|maximum| maximum < options.target_shard_bytes)
+    {
+        return Err(Error::InvalidOption {
+            field: "max_shard_bytes",
+            reason: "must be greater than or equal to target_shard_bytes",
+        });
+    }
     if options.target_block_bytes == 0 {
         return Err(Error::InvalidOption {
             field: "target_block_bytes",
@@ -678,6 +700,48 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(result.layout.encode_to_vec(), retry.layout.encode_to_vec());
+    }
+
+    #[tokio::test]
+    async fn hard_shard_limit_rejects_non_jumbo_overflow_but_allows_one_jumbo_record() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let store = shardpack_storage::Store::filesystem(root.path()).unwrap();
+        let options = MaterializeOptions {
+            target_shard_bytes: 68,
+            max_shard_bytes: Some(200),
+            target_block_bytes: 16,
+            ..Default::default()
+        };
+        let mut ordinary = Records(
+            (0..2_u8)
+                .map(|value| EncodedRecord {
+                    sample_id: [value; 16],
+                    flags: 0,
+                    payload: Bytes::from(vec![value; 10]),
+                })
+                .collect::<Vec<_>>()
+                .into_iter(),
+        );
+        let error = materialize_layout(&mut ordinary, [0x31; 32], &store, staging.path(), &options)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("non-jumbo shard exceeds"));
+
+        let mut jumbo = Records(
+            vec![EncodedRecord {
+                sample_id: [9; 16],
+                flags: 0,
+                payload: Bytes::from(vec![9; 256]),
+            }]
+            .into_iter(),
+        );
+        let result = materialize_layout(&mut jumbo, [0x32; 32], &store, staging.path(), &options)
+            .await
+            .unwrap();
+        assert_eq!(result.layout.shards.len(), 1);
+        assert!(result.layout.shards[0].byte_size > 200);
+        assert_eq!(result.layout.recipe.unwrap().max_shard_bytes, Some(200));
     }
 
     #[tokio::test]

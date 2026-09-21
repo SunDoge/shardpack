@@ -106,6 +106,7 @@ class DatasetWriter:
         *,
         store: str | None = None,
         target_shard_bytes: int = 1_073_741_824,
+        max_shard_bytes: int | None = None,
         target_block_bytes: int = 16_777_216,
         block_codec: str = "none",
         zstd_level: int = 1,

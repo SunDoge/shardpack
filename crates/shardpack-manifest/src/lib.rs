@@ -257,6 +257,15 @@ pub fn validate_layout(manifest: &proto::LayoutManifest) -> Result<()> {
             reason: "target sizes must be greater than zero",
         });
     }
+    if recipe
+        .max_shard_bytes
+        .is_some_and(|maximum| maximum < recipe.target_shard_bytes)
+    {
+        return Err(Error::Invalid {
+            field: "recipe.max_shard_bytes",
+            reason: "must be greater than or equal to target_shard_bytes",
+        });
+    }
     if !matches!(recipe.block_codec.as_str(), "none" | "zstd") {
         return Err(Error::Invalid {
             field: "recipe.block_codec",
@@ -549,6 +558,7 @@ mod tests {
                 target_block_bytes: 5,
                 block_codec: "none".into(),
                 shuffle_seed: None,
+                max_shard_bytes: None,
             }),
             portability: proto::Portability::SelfContained as i32,
             durability: proto::Durability::Durable as i32,

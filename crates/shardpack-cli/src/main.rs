@@ -155,6 +155,9 @@ enum Command {
         layout_prefix: String,
         #[arg(long, default_value_t = 1_073_741_824)]
         target_shard_bytes: u64,
+        /// Hard ceiling for non-jumbo shard objects.
+        #[arg(long)]
+        max_shard_bytes: Option<u64>,
         #[arg(long, default_value_t = 16_777_216)]
         target_block_bytes: u64,
         #[arg(long, value_enum, default_value_t = Codec::None)]
@@ -174,6 +177,9 @@ enum Command {
         layout_prefix: String,
         #[arg(long, default_value_t = 1_073_741_824)]
         target_shard_bytes: u64,
+        /// Hard ceiling for non-jumbo shard objects.
+        #[arg(long)]
+        max_shard_bytes: Option<u64>,
         #[arg(long, default_value_t = 16_777_216)]
         target_block_bytes: usize,
         #[arg(long, value_enum, default_value_t = Codec::None)]
@@ -291,6 +297,7 @@ async fn run(cli: Cli) -> Result<()> {
             snapshot_prefix,
             layout_prefix,
             target_shard_bytes,
+            max_shard_bytes,
             target_block_bytes,
             block_codec,
             shards,
@@ -321,6 +328,7 @@ async fn run(cli: Cli) -> Result<()> {
                         target_block_bytes,
                         block_codec: codec_name_for(block_codec).into(),
                         shuffle_seed: None,
+                        max_shard_bytes,
                     },
                     builder_version: env!("CARGO_PKG_VERSION").into(),
                 },
@@ -339,6 +347,7 @@ async fn run(cli: Cli) -> Result<()> {
             object_prefix,
             layout_prefix,
             target_shard_bytes,
+            max_shard_bytes,
             target_block_bytes,
             block_codec,
             zstd_level,
@@ -349,6 +358,7 @@ async fn run(cli: Cli) -> Result<()> {
             let options = MaterializeOptions {
                 store_id: storage.selected_store_id.clone(),
                 target_shard_bytes,
+                max_shard_bytes,
                 target_block_bytes,
                 block_codec: block_codec.into(),
                 zstd_level,
@@ -958,6 +968,7 @@ mod tests {
                 snapshot_prefix: "snapshots".into(),
                 layout_prefix: "layouts".into(),
                 target_shard_bytes: 1024,
+                max_shard_bytes: None,
                 target_block_bytes: 1024,
                 block_codec: Codec::None,
                 shards: vec!["incoming/data.spk".into()],
@@ -1037,6 +1048,7 @@ root = "{}"
                 snapshot_prefix: "snapshots".into(),
                 layout_prefix: "layouts".into(),
                 target_shard_bytes: 1024,
+                max_shard_bytes: None,
                 target_block_bytes: 1024,
                 block_codec: Codec::None,
                 shards: vec!["incoming/configured.spk".into()],

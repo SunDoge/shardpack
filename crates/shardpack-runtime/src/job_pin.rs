@@ -88,6 +88,7 @@ mod tests {
                 target_block_bytes: 1,
                 block_codec: "none".into(),
                 shuffle_seed: None,
+                max_shard_bytes: None,
             }),
             portability: proto::Portability::SelfContained as i32,
             durability: proto::Durability::Durable as i32,

@@ -67,6 +67,7 @@ fn layout_fixture() -> proto::LayoutManifest {
             target_block_bytes: 16_777_216,
             block_codec: "none".into(),
             shuffle_seed: None,
+            max_shard_bytes: None,
         }),
         portability: proto::Portability::SelfContained as i32,
         durability: proto::Durability::Durable as i32,

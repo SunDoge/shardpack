@@ -65,6 +65,7 @@ struct PythonWriterOptions {
     store_id: String,
 
     target_shard_bytes: u64,
+    max_shard_bytes: Option<u64>,
     target_block_bytes: usize,
     block_codec: BlockCodec,
     zstd_level: i32,
@@ -88,6 +89,10 @@ struct PythonWriterLimits {
     staging_max_bytes: u64,
 }
 ```
+
+`max_shard_bytes` is optional. When set, publication rejects a completed
+multi-record shard above the hard ceiling; a single-record jumbo shard remains
+legal. The Cloudflare/B2 profile uses a 384 MiB soft target and 480 MiB ceiling.
 
 `algorithm` is explicit even while AES-256-GCM is the only accepted value. The
 layout persists `algorithm` and `key_id`; key bytes remain process-local and are

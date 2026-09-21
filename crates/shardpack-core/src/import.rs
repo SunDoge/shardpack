@@ -293,6 +293,7 @@ mod tests {
                     target_block_bytes: 1024,
                     block_codec: "none".into(),
                     shuffle_seed: None,
+                    max_shard_bytes: None,
                 },
                 builder_version: "import-test".into(),
             },
