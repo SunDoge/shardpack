@@ -42,6 +42,7 @@ pub struct ShardReader<R> {
     derived_decryption_key: Option<([u8; 16], crate::EncryptionKey)>,
     expected_encryption: Option<crate::EncryptionAlgorithm>,
     collect_content_fingerprint: bool,
+    decompressor: zrip::DecompressContext,
 }
 
 impl<R: Read> ShardReader<R> {
@@ -83,6 +84,7 @@ impl<R: Read> ShardReader<R> {
             derived_decryption_key: None,
             expected_encryption: Some(expected_encryption),
             collect_content_fingerprint: true,
+            decompressor: zrip::DecompressContext::new(),
         })
     }
 
@@ -219,7 +221,9 @@ impl<R: Read> ShardReader<R> {
         let body = Bytes::from(body);
         let directory = body.slice(..expected_directory);
         let stored = body.slice(expected_directory..);
-        let payload = header.codec.decompress(stored, raw_size)?;
+        let payload = header
+            .codec
+            .decompress(stored, raw_size, &mut self.decompressor)?;
         let mut offset = 0_usize;
         let (entry_chunks, remainder) = directory.as_chunks::<RECORD_ENTRY_SIZE>();
         debug_assert!(remainder.is_empty());

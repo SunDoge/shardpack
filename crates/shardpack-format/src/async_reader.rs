@@ -21,6 +21,7 @@ pub struct AsyncShardReader<R> {
     derived_decryption_key: Option<([u8; 16], crate::EncryptionKey)>,
     expected_encryption: Option<crate::EncryptionAlgorithm>,
     collect_content_fingerprint: bool,
+    decompressor: zrip::DecompressContext,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +78,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             derived_decryption_key: None,
             expected_encryption: Some(expected_encryption),
             collect_content_fingerprint: true,
+            decompressor: zrip::DecompressContext::new(),
         })
     }
 
@@ -115,6 +117,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             derived_decryption_key: None,
             expected_encryption,
             collect_content_fingerprint: true,
+            decompressor: zrip::DecompressContext::new(),
         }
     }
 
@@ -308,7 +311,9 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             .ok_or(Error::InvalidBlockHeader {
                 reason: "block offset overflow",
             })?;
-        let payload = header.codec.decompress(stored, raw_size)?;
+        let payload = header
+            .codec
+            .decompress(stored, raw_size, &mut self.decompressor)?;
         let mut offset = 0_usize;
         let (entries, remainder) = directory.as_chunks::<RECORD_ENTRY_SIZE>();
         debug_assert!(remainder.is_empty());

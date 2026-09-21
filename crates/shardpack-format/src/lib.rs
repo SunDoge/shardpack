@@ -61,7 +61,7 @@ mod error {
         #[snafu(display("compression error: {source}"))]
         Compression { source: zrip::CompressError },
         #[snafu(display("decompression error: {source}"))]
-        Decompression { source: std::io::Error },
+        Decompression { source: zrip::DecompressError },
         #[snafu(display("block {field} value {actual} exceeds configured limit {limit}"))]
         ResourceLimit {
             field: &'static str,

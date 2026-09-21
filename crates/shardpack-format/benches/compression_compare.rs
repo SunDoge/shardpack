@@ -103,6 +103,21 @@ fn compare(input: &[u8], level: i32) {
             input.len() as f64 * ROUNDS as f64 / started.elapsed().as_secs_f64() / 1024_f64.powi(3);
         println!("  zrip context + owned {name} L{level}: {gib_per_second:.2} GiB/s");
 
+        let mut context = zrip::DecompressContext::new();
+        let started = Instant::now();
+        for _ in 0..ROUNDS {
+            let mut decoded = Vec::with_capacity(input.len());
+            let written = context
+                .decompress_into_with_limit(black_box(encoded), &mut decoded, input.len())
+                .unwrap();
+            assert_eq!(written, input.len());
+            assert_eq!(decoded, input);
+            black_box(decoded);
+        }
+        let gib_per_second =
+            input.len() as f64 * ROUNDS as f64 / started.elapsed().as_secs_f64() / 1024_f64.powi(3);
+        println!("  zrip context + caller buffer {name} L{level}: {gib_per_second:.2} GiB/s");
+
         let mut c_context = zstd::bulk::Decompressor::new().unwrap();
         let started = Instant::now();
         for _ in 0..ROUNDS {

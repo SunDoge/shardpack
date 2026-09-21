@@ -22,18 +22,29 @@ impl TryFrom<u8> for BlockCodec {
 }
 
 impl BlockCodec {
-    pub(crate) fn decompress(self, stored: Bytes, raw_size: usize) -> Result<Bytes> {
+    pub(crate) fn decompress(
+        self,
+        stored: Bytes,
+        raw_size: usize,
+        context: &mut zrip::DecompressContext,
+    ) -> Result<Bytes> {
         match self {
             Self::None if stored.len() == raw_size => Ok(stored),
             Self::None => Err(Error::InvalidBlockHeader {
                 reason: "raw and stored sizes differ for codec none",
             }),
-            // zrip emits standard zstd frames and wins on the transfer-focused
-            // encode path. The mature C decoder remains materially faster on
-            // highly compressible blocks, which dominate some training sets.
-            Self::Zstd => zstd::bulk::decompress(&stored, raw_size)
-                .map(Bytes::from)
-                .map_err(|source| Error::Decompression { source }),
+            Self::Zstd => {
+                let mut output = Vec::with_capacity(raw_size);
+                let written = context
+                    .decompress_into_with_limit(&stored, &mut output, raw_size)
+                    .map_err(|source| Error::Decompression { source })?;
+                if written != raw_size {
+                    return Err(Error::InvalidBlockHeader {
+                        reason: "decompressed payload size differs from raw payload size",
+                    });
+                }
+                Ok(Bytes::from(output))
+            }
         }
     }
 }

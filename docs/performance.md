@@ -54,18 +54,10 @@ cargo bench -p shardpack-format --bench compression_compare
 ```
 
 The writer uses `zrip` with a reusable compression context and emits standard
-zstd frames. The reader currently uses the reference C zstd decoder. A zrip
-`DecompressContext` returning a borrowed output reaches roughly 2.4--3.4 GiB/s
-on the retained samples, but ShardPack records must own a block after the next
-decode begins. Converting that borrowed output with `into_owned()` adds a full
-block copy and lowers measured throughput to roughly 1.1--1.4 GiB/s, below the
-C decoder's roughly 1.5--2.0 GiB/s owned-output path. This is an API ownership
-bottleneck rather than evidence of an incorrect decoder or slow decode core.
-
-A useful upstream zrip API would combine reusable decoder tables/workspace with
-a caller-owned output `Vec`, analogous to `decompress_into`, so consumers can
-move the completed allocation into `Bytes` without copying. Until that exists,
-the hybrid path avoids the extra block copy.
+zstd frames. The reader uses zrip's reusable decoder workspace and decompresses
+directly into a caller-owned, exactly-sized `Vec`, which is then moved into
+`Bytes` without copying. The dependency is temporarily pinned to the
+`perf/decompress-into-caller-buffer` branch until this API is released.
 
 Local measurements also showed that zrip encoding can outperform C zstd on
 incompressible input and produce smaller frames for the structured-data sample
