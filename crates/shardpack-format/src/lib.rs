@@ -10,6 +10,7 @@ mod fingerprint;
 mod hashing_reader;
 mod reader;
 mod shard_header;
+mod transcode;
 mod writer;
 
 pub use async_reader::{AsyncReaderPosition, AsyncShardReader};
@@ -22,6 +23,7 @@ pub use fingerprint::ContentFingerprint;
 pub use hashing_reader::Blake3Reader;
 pub use reader::{ReaderLimits, Record, ShardReader};
 pub use shard_header::{SHARD_HEADER_SIZE, ShardHeader};
+pub use transcode::{plaintext_block, plaintext_shard_header};
 pub use writer::{ShardSummary, ShardWriter, WriterOptions};
 
 pub const FORMAT_VERSION: u16 = 1;

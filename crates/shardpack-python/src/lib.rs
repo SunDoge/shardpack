@@ -862,6 +862,7 @@ impl PyRecord {
 struct LoaderOptions {
     cache_dir: Option<PathBuf>,
     cache_max_bytes: u64,
+    plaintext_cache: bool,
     network_concurrency: usize,
     network_prefetch_bytes: usize,
     epoch: u64,
@@ -886,7 +887,15 @@ impl LoaderOptions {
     ) -> PyResult<DatasetReader> {
         reader = reader.with_metrics(metrics);
         if let Some(cache_dir) = &self.cache_dir {
-            let cache = LocalCache::new(cache_dir).with_max_bytes(self.cache_max_bytes);
+            let mut cache = LocalCache::new(cache_dir).with_max_bytes(self.cache_max_bytes);
+            if self.plaintext_cache {
+                let (_, key) = self.encryption.as_ref().ok_or_else(|| {
+                    PyValueError::new_err(
+                        "cache_mode='plaintext' requires encryption_key_id and encryption_key",
+                    )
+                })?;
+                cache = cache.with_plaintext(key.clone());
+            }
             reader = reader.with_cache(if let Some(metrics) = cache_metrics {
                 cache.with_metrics(metrics)
             } else {
@@ -992,12 +1001,13 @@ impl PyDataset {
         &self.layout_key
     }
 
-    #[pyo3(signature = (*, cache_dir=None, cache_max_bytes=274_877_906_944, network_concurrency=2, network_prefetch_bytes=67_108_864, shuffle_max_records=4096, shuffle_max_bytes=268_435_456, shuffle_seed=1, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None))]
+    #[pyo3(signature = (*, cache_dir=None, cache_max_bytes=274_877_906_944, cache_mode="ciphertext", network_concurrency=2, network_prefetch_bytes=67_108_864, shuffle_max_records=4096, shuffle_max_bytes=268_435_456, shuffle_seed=1, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None))]
     #[allow(clippy::too_many_arguments)]
     fn records(
         &self,
         cache_dir: Option<PathBuf>,
         cache_max_bytes: u64,
+        cache_mode: &str,
         network_concurrency: usize,
         network_prefetch_bytes: usize,
         shuffle_max_records: usize,
@@ -1018,6 +1028,7 @@ impl PyDataset {
             LoaderOptions {
                 cache_dir,
                 cache_max_bytes,
+                plaintext_cache: parse_cache_mode(cache_mode)?,
                 network_concurrency,
                 network_prefetch_bytes,
                 epoch,
@@ -1034,7 +1045,7 @@ impl PyDataset {
         )
     }
 
-    #[pyo3(signature = (checkpoint, *, cache_dir=None, cache_max_bytes=274_877_906_944, network_concurrency=2, network_prefetch_bytes=67_108_864, encryption_key_id=None, encryption_key=None))]
+    #[pyo3(signature = (checkpoint, *, cache_dir=None, cache_max_bytes=274_877_906_944, cache_mode="ciphertext", network_concurrency=2, network_prefetch_bytes=67_108_864, encryption_key_id=None, encryption_key=None))]
     #[allow(clippy::too_many_arguments)]
     fn resume_records(
         &self,
@@ -1042,6 +1053,7 @@ impl PyDataset {
         checkpoint: &PyLoaderCheckpoint,
         cache_dir: Option<PathBuf>,
         cache_max_bytes: u64,
+        cache_mode: &str,
         network_concurrency: usize,
         network_prefetch_bytes: usize,
         encryption_key_id: Option<String>,
@@ -1060,9 +1072,18 @@ impl PyDataset {
         }
         let encryption = parse_encryption(encryption_key_id, encryption_key)?;
         let runtime = loader_runtime(network_concurrency)?;
+        let plaintext_cache = parse_cache_mode(cache_mode)?;
+        if plaintext_cache && encryption.is_none() {
+            return Err(PyValueError::new_err(
+                "cache_mode='plaintext' requires encryption_key_id and encryption_key",
+            ));
+        }
         let cache_metrics = cache_dir.as_ref().map(|_| CacheMetrics::default());
         let resume_cache = cache_dir.as_ref().map(|directory| {
-            let cache = LocalCache::new(directory).with_max_bytes(cache_max_bytes);
+            let mut cache = LocalCache::new(directory).with_max_bytes(cache_max_bytes);
+            if plaintext_cache {
+                cache = cache.with_plaintext(encryption.as_ref().expect("checked above").1.clone());
+            }
             if let Some(metrics) = &cache_metrics {
                 cache.with_metrics(metrics.clone())
             } else {
@@ -1124,6 +1145,7 @@ impl PyDataset {
         let options = LoaderOptions {
             cache_dir,
             cache_max_bytes,
+            plaintext_cache,
             network_concurrency,
             network_prefetch_bytes,
             epoch: loader_checkpoint.epoch,
@@ -1154,7 +1176,7 @@ impl PyDataset {
         })
     }
 
-    #[pyo3(signature = (batch_size, *, drop_last=false, cache_dir=None, cache_max_bytes=274_877_906_944, network_concurrency=2, network_prefetch_bytes=67_108_864, shuffle_max_records=4096, shuffle_max_bytes=268_435_456, shuffle_seed=1, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None))]
+    #[pyo3(signature = (batch_size, *, drop_last=false, cache_dir=None, cache_max_bytes=274_877_906_944, cache_mode="ciphertext", network_concurrency=2, network_prefetch_bytes=67_108_864, shuffle_max_records=4096, shuffle_max_bytes=268_435_456, shuffle_seed=1, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None))]
     #[allow(clippy::too_many_arguments)]
     fn batches(
         &self,
@@ -1162,6 +1184,7 @@ impl PyDataset {
         drop_last: bool,
         cache_dir: Option<PathBuf>,
         cache_max_bytes: u64,
+        cache_mode: &str,
         network_concurrency: usize,
         network_prefetch_bytes: usize,
         shuffle_max_records: usize,
@@ -1184,6 +1207,7 @@ impl PyDataset {
         let loader = self.records(
             cache_dir,
             cache_max_bytes,
+            cache_mode,
             network_concurrency,
             network_prefetch_bytes,
             shuffle_max_records,
@@ -1220,6 +1244,16 @@ fn parse_encryption(
         }
         _ => Err(PyValueError::new_err(
             "encryption_key_id and encryption_key must be provided together",
+        )),
+    }
+}
+
+fn parse_cache_mode(value: &str) -> PyResult<bool> {
+    match value {
+        "ciphertext" => Ok(false),
+        "plaintext" => Ok(true),
+        _ => Err(PyValueError::new_err(
+            "cache_mode must be 'ciphertext' or 'plaintext'",
         )),
     }
 }

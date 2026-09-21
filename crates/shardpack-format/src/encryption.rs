@@ -55,6 +55,13 @@ impl EncryptionKey {
         &self.0.bytes
     }
 
+    /// Non-secret, domain-separated commitment used to bind trusted local
+    /// plaintext cache entries to the key that authenticated their source.
+    #[must_use]
+    pub fn cache_commitment(&self) -> [u8; 32] {
+        blake3::derive_key("shardpack plaintext cache key commitment v1", self.bytes())
+    }
+
     fn cipher(&self) -> &LessSafeKey {
         &self.0.cipher
     }

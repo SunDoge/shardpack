@@ -11,7 +11,7 @@ use bytes::Bytes;
 use futures_util::{SinkExt, Stream, TryStreamExt};
 use opendal::{
     ErrorKind, Operator,
-    services::{Fs, S3},
+    services::{Fs, Http, S3},
 };
 use snafu::Snafu;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -46,6 +46,8 @@ pub enum Error {
     AlreadyExists { key: String },
     #[snafu(display("storage backend {scheme} cannot conditionally create immutable objects"))]
     ImmutableWriteUnsupported { scheme: String },
+    #[snafu(display("storage backend {scheme} is read-only"))]
+    ReadOnly { scheme: String },
     #[snafu(display("OpenDAL {operation} failed for {key:?}: {source}"))]
     Backend {
         operation: &'static str,
@@ -73,6 +75,7 @@ pub struct Store {
     filesystem_root: Option<PathBuf>,
     write_chunk_bytes: Option<usize>,
     write_concurrency: usize,
+    read_only: bool,
 }
 
 impl std::fmt::Debug for Store {
@@ -83,6 +86,7 @@ impl std::fmt::Debug for Store {
             .field("filesystem_fast_publish", &self.filesystem_root.is_some())
             .field("write_chunk_bytes", &self.write_chunk_bytes)
             .field("write_concurrency", &self.write_concurrency)
+            .field("read_only", &self.read_only)
             .finish()
     }
 }
@@ -161,6 +165,7 @@ impl Store {
             filesystem_root: None,
             write_chunk_bytes: None,
             write_concurrency: 1,
+            read_only: false,
         })
     }
 
@@ -235,6 +240,33 @@ impl Store {
         store.write_chunk_bytes = Some(options.write_chunk_bytes);
         store.write_concurrency = options.write_concurrency;
         Ok(store)
+    }
+
+    /// Creates a credential-free, read-only store for a public CDN, object
+    /// URL prefix, or IPFS HTTP gateway. Object keys are appended to
+    /// `base_url`; listing and all mutations are intentionally unavailable.
+    pub fn http(base_url: &str) -> Result<Self> {
+        opendal::install_default();
+        let endpoint = base_url.trim_end_matches('/');
+        if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
+            return Err(Error::InvalidKey {
+                key: base_url.to_owned(),
+                reason: "HTTP base URL must start with http:// or https://",
+            });
+        }
+        let operator =
+            Operator::new(Http::default().endpoint(endpoint)).map_err(|source| Error::Backend {
+                operation: "initialize HTTP store",
+                key: endpoint.to_owned(),
+                source: Box::new(source),
+            })?;
+        Ok(Self {
+            operator,
+            filesystem_root: None,
+            write_chunk_bytes: None,
+            write_concurrency: 1,
+            read_only: true,
+        })
     }
 
     #[must_use]
@@ -348,6 +380,11 @@ impl Store {
 
     /// Recursively lists object keys and the metadata supplied by the backend.
     pub async fn list_objects(&self, prefix: &str) -> Result<Vec<ObjectInfo>> {
+        if self.read_only {
+            return Err(Error::ReadOnly {
+                scheme: self.operator.info().scheme().to_string(),
+            });
+        }
         validate_prefix(prefix)?;
         let mut objects = self
             .operator
@@ -371,6 +408,11 @@ impl Store {
     }
 
     pub async fn write_immutable(&self, key: &str, mut input: ByteStream) -> Result<()> {
+        if self.read_only {
+            return Err(Error::ReadOnly {
+                scheme: self.operator.info().scheme().to_string(),
+            });
+        }
         validate_key(key)?;
         let mut writer = self.operator.writer_with(key).if_not_exists(true);
         if let Some(chunk_bytes) = self.write_chunk_bytes {
@@ -426,6 +468,11 @@ impl Store {
         key: &str,
         staging: tempfile::NamedTempFile,
     ) -> Result<TempfilePublication> {
+        if self.read_only {
+            return Err(Error::ReadOnly {
+                scheme: self.operator.info().scheme().to_string(),
+            });
+        }
         validate_key(key)?;
         let Some(root) = &self.filesystem_root else {
             self.write_file_immutable(key, staging.path()).await?;
@@ -463,6 +510,11 @@ impl Store {
     }
 
     pub async fn delete(&self, key: &str) -> Result<()> {
+        if self.read_only {
+            return Err(Error::ReadOnly {
+                scheme: self.operator.info().scheme().to_string(),
+            });
+        }
         validate_key(key)?;
         self.operator
             .delete(key)
@@ -610,6 +662,8 @@ fn map_stream_write_error(operation: &'static str, key: &str, source: std::io::E
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+
     use crate::{Error, S3Options, Store, StoreRegistry, TempfilePublication};
     use bytes::Bytes;
     use futures_util::{StreamExt, stream};
@@ -665,6 +719,33 @@ mod tests {
                 .await,
             Err(Error::AlreadyExists { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn public_http_store_reads_without_mutation_capabilities() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let read = socket.read(&mut request).unwrap();
+            let request = std::str::from_utf8(&request[..read]).unwrap();
+            assert!(request.starts_with("GET /dataset/shards/a.spk HTTP/1.1"));
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\npublic",
+                )
+                .unwrap();
+        });
+        let store = Store::http(&format!("http://{address}/dataset")).unwrap();
+        assert_eq!(store.read_all("shards/a.spk").await.unwrap(), "public");
+        assert!(matches!(
+            store
+                .write_bytes_immutable("shards/a.spk", Bytes::from_static(b"no"))
+                .await,
+            Err(Error::ReadOnly { .. })
+        ));
+        server.join().unwrap();
     }
 
     #[tokio::test]

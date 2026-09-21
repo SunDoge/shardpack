@@ -224,6 +224,8 @@ def test_invalid_limits_are_python_errors(dataset: shardpack.Dataset) -> None:
         dataset.records(network_concurrency=0)
     with pytest.raises(ValueError, match="both be zero or non-zero"):
         dataset.records(shuffle_max_records=0)
+    with pytest.raises(ValueError, match="cache_mode"):
+        dataset.records(cache_mode="unknown")
 
 
 def test_encrypted_layout_requires_matching_external_key(
@@ -255,6 +257,28 @@ root = "{DATA}"
         )
     )
     assert len(records) == 7
+
+    plaintext_cache = tmp_path_factory.mktemp("plaintext-cache")
+    cold = dataset.records(
+        cache_dir=plaintext_cache,
+        cache_mode="plaintext",
+        shuffle_max_records=0,
+        shuffle_max_bytes=0,
+        encryption_key_id="test://python-key",
+        encryption_key=bytes([0x77]) * 32,
+    )
+    cold_ids = [record.sample_id for record in cold]
+    assert cold.metrics()["cache_misses"] == dataset.shard_count
+    hot = dataset.records(
+        cache_dir=plaintext_cache,
+        cache_mode="plaintext",
+        shuffle_max_records=0,
+        shuffle_max_bytes=0,
+        encryption_key_id="test://python-key",
+        encryption_key=bytes([0x77]) * 32,
+    )
+    assert [record.sample_id for record in hot] == cold_ids
+    assert hot.metrics()["cache_hits"] == dataset.shard_count
 
     loader = dataset.records(
         encryption_key_id="test://python-key",

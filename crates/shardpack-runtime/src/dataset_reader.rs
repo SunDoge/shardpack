@@ -9,7 +9,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use crate::{
     DistributedContext, EncodedRecord, Error, NetworkPrefetch, NodeAffinity, Result,
     RuntimeMetrics, affinity_assigned_shard_indices, assigned_shard_indices,
-    prefetch::PrefetchQueue,
+    prefetch::{PrefetchQueue, PrefetchedObject},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -439,14 +439,20 @@ impl DatasetReader {
                 open_object(&self.stores, self.cache.as_ref(), meta).await?
             };
             self.next_shard_index += 1;
+            let plaintext = object.plaintext;
             let reader = AsyncShardReader::with_limits_and_key(
-                Blake3Reader::new(object),
+                Blake3Reader::new(object.reader),
                 ReaderLimits::default(),
-                self.decryption_key.clone(),
+                if plaintext {
+                    None
+                } else {
+                    self.decryption_key.clone()
+                },
             )
             .await
             .map_err(|source| Error::Format { source })?
             .without_content_fingerprint();
+            self.verify_current_fingerprint = !plaintext;
             self.current_shard_index = Some(shard_index);
             self.current = Some(reader);
         }
@@ -719,11 +725,12 @@ impl DatasetReader {
                 reason: "invalid block offset or record count",
             });
         }
-        let (object, verify_full_identity) = if result.cache.is_some() {
+        let (object, verify_full_identity, plaintext) = if result.cache.is_some() {
             let object = open_object(&result.stores, result.cache.as_ref(), meta).await?;
-            let mut object = Blake3Reader::new(object);
+            let plaintext = object.plaintext;
+            let mut object = Blake3Reader::new(object.reader);
             discard_exact(&mut object, checkpoint.block_start_offset).await?;
-            (object, true)
+            (object, !plaintext, plaintext)
         } else {
             let object = result
                 .stores
@@ -735,14 +742,14 @@ impl DatasetReader {
                 )
                 .await
                 .map_err(|source| Error::Storage { source })?;
-            (Blake3Reader::new(object), false)
+            (Blake3Reader::new(object), false, false)
         };
         let mut reader = AsyncShardReader::from_block_boundary_with_key(
             object,
             ReaderLimits::default(),
             checkpoint.block_index,
             checkpoint.block_start_offset,
-            decryption_key,
+            if plaintext { None } else { decryption_key },
         )
         .without_content_fingerprint();
         reader
@@ -869,7 +876,7 @@ async fn open_object(
     stores: &StoreRegistry,
     cache: Option<&LocalCache>,
     meta: &proto::ShardMeta,
-) -> Result<AsyncObjectReader> {
+) -> Result<PrefetchedObject> {
     let location = shardpack_manifest::object_location(meta);
     let store = stores
         .get(&location.store_id)
@@ -877,15 +884,23 @@ async fn open_object(
     if let Some(cache) = cache {
         let id =
             ShardId::from_slice(&meta.shard_id).map_err(|source| Error::Manifest { source })?;
-        cache
-            .open(store, &location.object_key, id, meta.byte_size)
+        let object = cache
+            .open_object(store, &location.object_key, id, meta.byte_size)
             .await
-            .map_err(|source| Error::Cache { source })
+            .map_err(|source| Error::Cache { source })?;
+        Ok(PrefetchedObject {
+            reader: object.reader,
+            plaintext: object.plaintext,
+        })
     } else {
-        store
+        let reader = store
             .open_reader(&location.object_key)
             .await
-            .map_err(|source| Error::Storage { source })
+            .map_err(|source| Error::Storage { source })?;
+        Ok(PrefetchedObject {
+            reader,
+            plaintext: false,
+        })
     }
 }
 
@@ -1238,6 +1253,108 @@ mod tests {
             "second"
         );
         assert!(resumed.next_record().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn encrypted_layout_builds_plaintext_cache_during_first_epoch() {
+        let remote_root = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let store = shardpack_storage::Store::filesystem(remote_root.path()).unwrap();
+        let key = shardpack_format::EncryptionKey::new([0x33; 32]);
+        let mut writer = ShardWriter::new_encrypted(
+            Vec::new(),
+            WriterOptions {
+                target_block_bytes: 54,
+                ..WriterOptions::default()
+            },
+            key.clone(),
+        )
+        .unwrap();
+        for value in 1..=5_u8 {
+            writer.add_record([value; 16], 0, &[value; 3]).unwrap();
+        }
+        let (bytes, summary) = writer.finish().unwrap();
+        assert!(summary.block_count > 1);
+        let object_key = "shards/public-encrypted.spk";
+        store
+            .write_bytes_immutable(object_key, Bytes::from(bytes))
+            .await
+            .unwrap();
+        let mut layout = proto::LayoutManifest {
+            snapshot_id: vec![3; 32],
+            builder_version: "plaintext-cache-test".into(),
+            recipe: Some(proto::LayoutRecipe {
+                target_shard_bytes: 1024,
+                target_block_bytes: 54,
+                block_codec: "none".into(),
+                shuffle_seed: None,
+                max_shard_bytes: None,
+            }),
+            portability: proto::Portability::SelfContained as i32,
+            durability: proto::Durability::Durable as i32,
+            total_records: summary.record_count,
+            total_bytes: summary.byte_size,
+            content_fingerprint: Some(proto_fingerprint(summary.content_fingerprint)),
+            shards: vec![proto::ShardMeta {
+                shard_id: summary.shard_id.to_vec(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: object_key.into(),
+                }),
+                byte_size: summary.byte_size,
+                record_count: summary.record_count,
+                block_count: summary.block_count,
+                content_fingerprint: Some(proto_fingerprint(summary.content_fingerprint)),
+            }],
+            state: proto::LayoutState::Complete as i32,
+            encryption: Some(proto::EncryptionDescriptor {
+                algorithm: proto::EncryptionAlgorithm::Aes256Gcm as i32,
+                key_id: "test-key".into(),
+            }),
+            ..Default::default()
+        };
+        layout.layout_id = layout_id(&layout).0.to_vec();
+        let cache = shardpack_cache::LocalCache::new(cache_root.path()).with_plaintext(key.clone());
+
+        let mut cold = DatasetReader::new(store.clone(), layout.clone())
+            .unwrap()
+            .with_cache(cache.clone())
+            .with_decryption_key("test-key", key.clone())
+            .unwrap();
+        let mut cold_records = vec![cold.next_record().await.unwrap().unwrap().sample_id[0]];
+        let checkpoint = cold.checkpoint();
+        let stores = cold.stores.clone();
+        drop(cold);
+        let mut resumed = DatasetReader::resume_encrypted_with_registry_and_cache(
+            stores,
+            layout.clone(),
+            &checkpoint,
+            "test-key",
+            key.clone(),
+            cache.clone(),
+        )
+        .await
+        .unwrap();
+        while let Some(record) = resumed.next_record().await.unwrap() {
+            cold_records.push(record.sample_id[0]);
+        }
+        assert_eq!(cold_records, vec![1, 2, 3, 4, 5]);
+        // The abandoned partial from the interrupted first pass is never
+        // published; resume safely rebuilds it from the encrypted source.
+        assert_eq!(cache.metrics().snapshot().misses, 2);
+
+        store.delete(object_key).await.unwrap();
+        let mut hot = DatasetReader::new(store, layout)
+            .unwrap()
+            .with_cache(cache.clone())
+            .with_decryption_key("test-key", key)
+            .unwrap();
+        let mut hot_records = Vec::new();
+        while let Some(record) = hot.next_record().await.unwrap() {
+            hot_records.push(record.sample_id[0]);
+        }
+        assert_eq!(hot_records, cold_records);
+        assert_eq!(cache.metrics().snapshot().hits, 1);
     }
 
     #[tokio::test]

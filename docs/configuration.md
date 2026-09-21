@@ -38,6 +38,10 @@ secret_access_key = "ARCHIVE_SECRET_ACCESS_KEY"
 [stores.local]
 type = "filesystem"
 root = "/data/shardpack"
+
+[stores.public_training]
+type = "http"
+base_url = "https://data.example.com/shardpack"
 ```
 
 Credential modes are `default_chain`, `profile`, `env`, and `inline`. Prefer the
@@ -74,3 +78,14 @@ Store IDs contain only ASCII letters, digits, `-`, or `_`. Credentials are not
 part of ShardPack portability: as with an encryption key, authorization must be
 supplied by the runtime. Complete record payloads remain inside the referenced
 shard objects.
+
+## Public encrypted delivery
+
+An `http` store is a credential-free, read-only transport for immutable objects
+served by a public B2 bucket, Cloudflare CDN, another untrusted mirror, or an
+IPFS HTTP gateway. It cannot list, upload, or delete objects. Manifest
+`object_key` values are appended to `base_url`.
+
+Use public delivery only with ShardPack-encrypted layouts and supply key material
+separately to the training process. The full-shard BLAKE3 identity plus per-block
+AEAD authentication make the transport untrusted without changing correctness.

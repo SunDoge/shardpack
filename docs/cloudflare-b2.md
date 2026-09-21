@@ -1,9 +1,10 @@
 # Cloudflare and Backblaze B2 deployment
 
-This deployment profile uses Backblaze B2 as the durable object store and
-Cloudflare as the authenticated delivery and cache layer. It is an operational
-optimization only: B2 remains the source of shard bytes, and Cloudflare cache
-contents are never layout roots or durable copies.
+This deployment profile stores ShardPack-authenticated ciphertext in a public
+Backblaze B2 bucket and uses Cloudflare as a credential-free CDN. B2, Cloudflare,
+other mirrors, and clients are outside the trust boundary; only holders of the
+layout key can decode records. CDN contents are never layout roots or durable
+copies.
 
 ## Object-size constraint
 
@@ -47,34 +48,28 @@ encryption tags, and compression framing are not part of the soft payload target
 ## Range handling
 
 Prefer a cacheable full-object `200 OK` response and let Cloudflare satisfy
-client Range requests from that representation. When Workers Caching receives a
-Range request, it can request the full response from the Worker, store it, and
-slice the client-facing `206`. A Worker-generated `206 Partial Content` response
-is not stored by Workers Caching.
+client Range requests from that representation. A Range request does not make an
+otherwise ineligible or oversized object cacheable.
 
 Consequently, the default design is:
 
 ```text
-GPU client Range GET
+GPU client GET / Range GET
         |
         v
 Cloudflare cached complete shard
         |
       miss
         v
-Worker streams complete B2 object as 200
+public B2 object
 ```
 
-See [Workers cache configuration](https://developers.cloudflare.com/workers/cache/configuration/).
-The Worker must pipe streams rather than calling `arrayBuffer()`, `bytes()`, or
-`text()` on a shard.
-
-If shards must remain larger than the cache limit, a future Worker may expose
+If shards must remain larger than the cache limit, an optional Worker may expose
 synthetic, cacheable segment URLs and fill each segment with a B2 Range GET. Use
 coarse 64--128 MiB segments rather than one request per 16 MiB block to avoid
 excessive Worker and B2 operations. This is a fallback, not the default hot path.
 
-## Identity, headers, and authorization
+## Identity, headers, and trust boundary
 
 Shard paths must be content-addressed by `ShardId`. A successful immutable shard
 response should provide equivalent semantics to:
@@ -87,9 +82,25 @@ Accept-Ranges: bytes
 Content-Length: <exact shard byte size>
 ```
 
-The Worker authenticates the caller before serving data. Temporary credentials,
-signatures, and bearer tokens must not fragment the canonical cache key. B2
-credentials remain Worker secrets and must never be forwarded to the client.
+The public bucket contains only encrypted shards with content-addressed,
+non-semantic paths. Upload, listing, mutation, and deletion remain authenticated;
+only object download is public. The key and any sensitive manifest metadata are
+distributed through a separate control plane. A private bucket plus an
+authenticating Worker remains an optional policy choice, not a runtime
+requirement.
+
+The training config uses a read-only HTTP store pointed at the Cloudflare custom
+domain:
+
+```toml
+[stores.training]
+type = "http"
+base_url = "https://data.example.com/shardpack"
+```
+
+This same interface accepts another CDN or an IPFS HTTP gateway. Exact ciphertext
+BLAKE3 and block AEAD verification prevent an untrusted transport from silently
+changing training data.
 
 Cloudflare cache retention is popularity-based and may evict an object before
 its freshness TTL expires. Therefore a cache hit is never assumed for
@@ -101,7 +112,10 @@ Backblaze documents B2-to-Cloudflare delivery through the Bandwidth Alliance as
 free of B2 download bandwidth charges. This applies to traffic delivered through
 the Cloudflare path, including an edge miss that causes Cloudflare to contact B2.
 Caching still reduces B2 API operations, origin load, and repeated-read latency.
-It does not remove Cloudflare Worker/CDN charges or B2 request charges.
+It does not remove Cloudflare CDN costs or B2 request charges. Direct access to
+the discoverable B2 origin can bypass Cloudflare and may incur download charges,
+so use non-semantic content hashes, budget alerts, and provider-side limits. A
+Worker/private origin is required if origin bypass itself is unacceptable.
 
 See [Backblaze's Cloudflare integration](https://www.backblaze.com/docs/cloud-storage-cloudflare-integrations/).
 
@@ -112,4 +126,6 @@ local NVMe cache -> Cloudflare edge -> B2 origin
 ```
 
 Cloudflare reduces origin transfer cost and can accelerate shared hot shards;
-node-local NVMe remains the predictable cache for repeated epochs.
+node-local NVMe remains the predictable cache for repeated epochs. With
+`cache_mode="plaintext"`, the first epoch trains while downloading and
+authenticating ciphertext; later epochs read the derived plaintext shard only.

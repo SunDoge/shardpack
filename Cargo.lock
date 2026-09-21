@@ -1328,6 +1328,7 @@ dependencies = [
  "opendal-core",
  "opendal-http-transport-reqwest",
  "opendal-service-fs",
+ "opendal-service-http",
  "opendal-service-s3",
 ]
 
@@ -1383,6 +1384,18 @@ dependencies = [
  "serde",
  "tokio",
  "xattr",
+]
+
+[[package]]
+name = "opendal-service-http"
+version = "0.58.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2ebcbdfad4b81a1e6dde70e898396e011dfd52b5f8639b2628656f7915d6f4c"
+dependencies = [
+ "http",
+ "log",
+ "opendal-core",
+ "serde",
 ]
 
 [[package]]

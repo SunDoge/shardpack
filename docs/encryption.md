@@ -49,3 +49,24 @@ ChaCha20, so AES remains the only emitted algorithm for the MVP. The manifest an
 block header retain an explicit algorithm field for a future portable alternative.
 At 9.49 GiB/s, decryption is unlikely to bottleneck a single S3 stream or NVMe
 reader; aggregate multi-worker throughput still needs end-to-end profiling.
+
+## Public ciphertext and plaintext node cache
+
+Encrypted, content-addressed shards may be distributed through a public object
+bucket, CDN, mirror, or IPFS gateway. These systems are untrusted byte transports:
+the runtime accepts a shard only when block authentication succeeds and the full
+ciphertext matches the manifest `ShardId`. Encryption keys never appear in object
+URLs, manifests, cache metadata, or CDN configuration.
+
+The default local cache stores exact ciphertext. Trusted ephemeral GPU nodes may
+select `plaintext` mode. On a cold miss the runtime authenticates each block,
+removes encryption without decompressing its stored payload, and simultaneously
+feeds training and writes a valid plaintext `.spk`. The entry is published only
+after the complete remote ciphertext matches `ShardId`. Later epochs validate
+and stream the local plaintext shard without AEAD work.
+
+Plaintext entries are derived optimization artifacts, never layout objects or GC
+roots. Cache metadata binds their local BLAKE3, length, and a domain-separated
+one-way key commitment to the source encrypted `ShardId`; a warm hit still rejects
+incorrect key material. Delete the cache when releasing a GPU host, or use an
+encrypted volume when its disk is not an acceptable temporary trust boundary.

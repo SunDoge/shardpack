@@ -9,6 +9,7 @@ use std::{
 };
 
 use async_stream::try_stream;
+use bytes::Bytes;
 use futures_util::TryStreamExt;
 use shardpack_manifest::ShardId;
 use shardpack_storage::{AsyncObjectReader, Store};
@@ -18,6 +19,20 @@ use tokio_util::io::StreamReader;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const DOWNLOAD_LOCK_DIRECTORY: &str = ".shardpack-download-locks";
+const PLAINTEXT_META_MAGIC: &[u8; 8] = b"SPKPCHE\0";
+const PLAINTEXT_META_SIZE: usize = 120;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CacheMode {
+    #[default]
+    Ciphertext,
+    Plaintext,
+}
+
+pub struct CacheObject {
+    pub reader: AsyncObjectReader,
+    pub plaintext: bool,
+}
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -31,6 +46,12 @@ pub enum Error {
     },
     #[snafu(display("cached or downloaded shard {shard_id} failed identity verification"))]
     IdentityMismatch { shard_id: ShardId },
+    #[snafu(display("ShardPack conversion failed: {source}"))]
+    Format { source: shardpack_format::Error },
+    #[snafu(display("plaintext cache metadata is invalid for shard {shard_id}"))]
+    InvalidPlaintextMetadata { shard_id: ShardId },
+    #[snafu(display("plaintext cache for shard {shard_id} was created with a different key"))]
+    PlaintextKeyMismatch { shard_id: ShardId },
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -39,6 +60,8 @@ pub struct LocalCache {
     root: PathBuf,
     max_bytes: Option<u64>,
     metrics: CacheMetrics,
+    mode: CacheMode,
+    decryption_key: Option<shardpack_format::EncryptionKey>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -87,6 +110,8 @@ impl LocalCache {
             root: root.into(),
             max_bytes: None,
             metrics: CacheMetrics::default(),
+            mode: CacheMode::Ciphertext,
+            decryption_key: None,
         }
     }
 
@@ -103,6 +128,18 @@ impl LocalCache {
     }
 
     #[must_use]
+    pub fn with_plaintext(mut self, key: shardpack_format::EncryptionKey) -> Self {
+        self.mode = CacheMode::Plaintext;
+        self.decryption_key = Some(key);
+        self
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> CacheMode {
+        self.mode
+    }
+
+    #[must_use]
     pub fn metrics(&self) -> CacheMetrics {
         self.metrics.clone()
     }
@@ -114,10 +151,31 @@ impl LocalCache {
         shard_id: ShardId,
         expected_bytes: u64,
     ) -> Result<AsyncObjectReader> {
+        Ok(self
+            .open_object(store, object_key, shard_id, expected_bytes)
+            .await?
+            .reader)
+    }
+
+    pub async fn open_object(
+        &self,
+        store: &Store,
+        object_key: &str,
+        shard_id: ShardId,
+        expected_bytes: u64,
+    ) -> Result<CacheObject> {
+        if self.mode == CacheMode::Plaintext {
+            return self
+                .open_plaintext(store, object_key, shard_id, expected_bytes)
+                .await;
+        }
         let final_path = self.path_for(shard_id);
         if let Some(reader) = open_file_if_expected_size(&final_path, expected_bytes).await? {
             self.metrics.0.hits.fetch_add(1, Ordering::Relaxed);
-            return Ok(reader);
+            return Ok(CacheObject {
+                reader,
+                plaintext: false,
+            });
         }
 
         let parent = final_path.parent().expect("cache entry has parent");
@@ -130,7 +188,10 @@ impl LocalCache {
         // this opener waited for the per-shard lock.
         if let Some(reader) = open_file_if_expected_size(&final_path, expected_bytes).await? {
             self.metrics.0.hits.fetch_add(1, Ordering::Relaxed);
-            return Ok(reader);
+            return Ok(CacheObject {
+                reader,
+                plaintext: false,
+            });
         }
         let existed = tokio::fs::try_exists(&final_path)
             .await
@@ -203,9 +264,149 @@ impl LocalCache {
                 evict_to_limit(&cache_root, limit, &final_path, &metrics).await?;
             }
         };
-        Ok(Box::pin(StreamReader::new(
-            stream.map_err(|error: Error| std::io::Error::other(error)),
-        )))
+        Ok(CacheObject {
+            reader: Box::pin(StreamReader::new(
+                stream.map_err(|error: Error| std::io::Error::other(error)),
+            )),
+            plaintext: false,
+        })
+    }
+
+    async fn open_plaintext(
+        &self,
+        store: &Store,
+        object_key: &str,
+        shard_id: ShardId,
+        expected_ciphertext_bytes: u64,
+    ) -> Result<CacheObject> {
+        let key = self
+            .decryption_key
+            .clone()
+            .expect("plaintext cache mode always contains a decryption key");
+        let final_path = self.path_for(shard_id);
+        let meta_path = plaintext_meta_path(&final_path);
+        let key_commitment = key.cache_commitment();
+        if let Some((reader, meta)) =
+            open_plaintext_hit(&final_path, &meta_path, shard_id, key_commitment).await?
+        {
+            self.metrics.0.hits.fetch_add(1, Ordering::Relaxed);
+            return Ok(CacheObject {
+                reader: verify_plaintext_reader(reader, meta, shard_id),
+                plaintext: true,
+            });
+        }
+
+        let parent = final_path.parent().expect("cache entry has parent");
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|source| io_error("create cache directory", parent, source))?;
+        let download_lock = CacheDownloadLock::acquire(&self.root, shard_id).await?;
+        if let Some((reader, meta)) =
+            open_plaintext_hit(&final_path, &meta_path, shard_id, key_commitment).await?
+        {
+            self.metrics.0.hits.fetch_add(1, Ordering::Relaxed);
+            return Ok(CacheObject {
+                reader: verify_plaintext_reader(reader, meta, shard_id),
+                plaintext: true,
+            });
+        }
+        remove_plaintext_entry(&final_path, &meta_path).await?;
+        self.metrics.0.misses.fetch_add(1, Ordering::Relaxed);
+
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary =
+            final_path.with_extension(format!("plain.spk.tmp-{}-{sequence}", std::process::id()));
+        let file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .await
+            .map_err(|source| io_error("create plaintext temporary entry", &temporary, source))?;
+        let mut remote = store
+            .open_reader(object_key)
+            .await
+            .map_err(|source| Error::Storage { source })?;
+        let cache_root = self.root.clone();
+        let max_bytes = self.max_bytes;
+        let metrics = self.metrics.clone();
+        let expected_remote_id = *shard_id.as_bytes();
+        let stream = try_stream! {
+            let _download_lock = download_lock;
+            let mut guard = TemporaryGuard(Some(temporary.clone()));
+            let mut file = file;
+            let mut remote_hasher = blake3::Hasher::new();
+            let mut plaintext_hasher = blake3::Hasher::new();
+            let mut remote_bytes = 0_u64;
+            let mut plaintext_bytes = 0_u64;
+
+            let mut shard_header = [0_u8; shardpack_format::SHARD_HEADER_SIZE];
+            remote.read_exact(&mut shard_header).await
+                .map_err(|source| io_error("read encrypted shard header", &temporary, source))?;
+            account_remote(&metrics, &mut remote_hasher, &mut remote_bytes, &shard_header);
+            let plain_header = shardpack_format::plaintext_shard_header(&shard_header)
+                .map_err(|source| Error::Format { source })?;
+            write_plain_chunk(&mut file, &temporary, &mut plaintext_hasher, &mut plaintext_bytes, &plain_header).await?;
+            yield Bytes::copy_from_slice(&plain_header);
+
+            loop {
+                let mut raw_header = [0_u8; shardpack_format::BLOCK_HEADER_SIZE];
+                let read = remote.read(&mut raw_header[..1]).await
+                    .map_err(|source| io_error("read encrypted block header", &temporary, source))?;
+                if read == 0 {
+                    break;
+                }
+                remote.read_exact(&mut raw_header[1..]).await
+                    .map_err(|source| io_error("read encrypted block header", &temporary, source))?;
+                account_remote(&metrics, &mut remote_hasher, &mut remote_bytes, &raw_header);
+                let header = shardpack_format::BlockHeader::decode(&raw_header)
+                    .map_err(|source| Error::Format { source })?;
+                let body_len = usize::try_from(header.stored_body_bytes)
+                    .map_err(|_| Error::InvalidPlaintextMetadata { shard_id })?;
+                let mut body = vec![0_u8; body_len];
+                remote.read_exact(&mut body).await
+                    .map_err(|source| io_error("read encrypted block body", &temporary, source))?;
+                account_remote(&metrics, &mut remote_hasher, &mut remote_bytes, &body);
+                let (plain_block_header, plain_body) =
+                    shardpack_format::plaintext_block(&raw_header, body, &key)
+                        .map_err(|source| Error::Format { source })?;
+                write_plain_chunk(&mut file, &temporary, &mut plaintext_hasher, &mut plaintext_bytes, &plain_block_header).await?;
+                yield Bytes::copy_from_slice(&plain_block_header);
+                write_plain_chunk(&mut file, &temporary, &mut plaintext_hasher, &mut plaintext_bytes, &plain_body).await?;
+                yield Bytes::from(plain_body);
+            }
+
+            file.sync_all().await
+                .map_err(|source| io_error("sync plaintext temporary entry", &temporary, source))?;
+            drop(file);
+            if remote_bytes != expected_ciphertext_bytes
+                || remote_hasher.finalize().as_bytes() != &expected_remote_id
+            {
+                Err(Error::IdentityMismatch { shard_id })?;
+            }
+            let plaintext_id = *plaintext_hasher.finalize().as_bytes();
+            let metadata = PlaintextMetadata {
+                source_id: expected_remote_id,
+                plaintext_id,
+                key_commitment,
+                plaintext_bytes,
+            };
+            let _lock = CacheMutationLock::acquire(&cache_root).await?;
+            publish_file(&temporary, &final_path, shard_id).await?;
+            publish_plaintext_metadata(&meta_path, metadata).await?;
+            guard.0 = None;
+            if let Some(limit) = max_bytes {
+                evict_to_limit(&cache_root, limit, &final_path, &metrics).await?;
+            }
+        };
+        // The final plaintext identity is not known until this cold stream has
+        // been completely consumed. Runtime validation uses block AEAD during
+        // the first pass; subsequent hits use the published local identity.
+        Ok(CacheObject {
+            reader: Box::pin(StreamReader::new(
+                stream.map_err(|error: Error| std::io::Error::other(error)),
+            )),
+            plaintext: true,
+        })
     }
 
     /// Removes a cache entry that failed validation in the consuming reader.
@@ -214,6 +415,24 @@ impl LocalCache {
     pub async fn invalidate(&self, shard_id: ShardId) -> Result<bool> {
         let path = self.path_for(shard_id);
         let _download_lock = CacheDownloadLock::acquire(&self.root, shard_id).await?;
+        if self.mode == CacheMode::Plaintext {
+            let metadata = plaintext_meta_path(&path);
+            let existed = tokio::fs::try_exists(&path)
+                .await
+                .map_err(|source| io_error("stat plaintext cache entry", &path, source))?
+                || tokio::fs::try_exists(&metadata).await.map_err(|source| {
+                    io_error("stat plaintext cache metadata", &metadata, source)
+                })?;
+            if existed {
+                let _lock = CacheMutationLock::acquire(&self.root).await?;
+                remove_plaintext_entry(&path, &metadata).await?;
+                self.metrics
+                    .0
+                    .corrupt_entries
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            return Ok(existed);
+        }
         // A different worker may have replaced the corrupt inode after this
         // caller opened its reader. Never delete that newly repaired copy.
         if current_file_has_identity(&path, shard_id).await? == Some(true) {
@@ -236,8 +455,12 @@ impl LocalCache {
     #[must_use]
     pub fn path_for(&self, shard_id: ShardId) -> PathBuf {
         let hash = shard_id.to_string();
-        self.root
-            .join(&hash[..2])
+        let root = if self.mode == CacheMode::Plaintext {
+            self.root.join("plaintext")
+        } else {
+            self.root.clone()
+        };
+        root.join(&hash[..2])
             .join(&hash[2..4])
             .join(format!("{hash}.spk"))
     }
@@ -280,7 +503,7 @@ impl LocalCache {
                 let is_partial = path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.contains(".spk.tmp-"));
+                    .is_some_and(|name| name.contains(".spk.tmp-") || name.contains(".meta.tmp-"));
                 if is_partial && metadata.modified().unwrap_or(std::time::UNIX_EPOCH) <= cutoff {
                     match tokio::fs::remove_file(&path).await {
                         Ok(()) => {
@@ -354,12 +577,202 @@ async fn evict_to_limit(
         }
         match tokio::fs::remove_file(&path).await {
             Ok(()) => {
+                let metadata = plaintext_meta_path(&path);
+                let _ = tokio::fs::remove_file(metadata).await;
                 total = total.saturating_sub(bytes);
                 metrics.0.evicted_entries.fetch_add(1, Ordering::Relaxed);
                 metrics.0.evicted_bytes.fetch_add(bytes, Ordering::Relaxed);
             }
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
             Err(source) => return Err(io_error("evict cache entry", &path, source)),
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct PlaintextMetadata {
+    source_id: [u8; 32],
+    plaintext_id: [u8; 32],
+    key_commitment: [u8; 32],
+    plaintext_bytes: u64,
+}
+
+impl PlaintextMetadata {
+    fn encode(self) -> [u8; PLAINTEXT_META_SIZE] {
+        let mut bytes = [0_u8; PLAINTEXT_META_SIZE];
+        bytes[..8].copy_from_slice(PLAINTEXT_META_MAGIC);
+        bytes[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[16..48].copy_from_slice(&self.source_id);
+        bytes[48..80].copy_from_slice(&self.plaintext_id);
+        bytes[80..112].copy_from_slice(&self.key_commitment);
+        bytes[112..120].copy_from_slice(&self.plaintext_bytes.to_le_bytes());
+        bytes
+    }
+
+    fn decode(bytes: &[u8], shard_id: ShardId, key_commitment: [u8; 32]) -> Result<Self> {
+        if bytes.len() != PLAINTEXT_META_SIZE
+            || &bytes[..8] != PLAINTEXT_META_MAGIC
+            || u16::from_le_bytes(bytes[8..10].try_into().expect("fixed slice")) != 1
+            || bytes[10..16] != [0; 6]
+        {
+            return Err(Error::InvalidPlaintextMetadata { shard_id });
+        }
+        let source_id = bytes[16..48].try_into().expect("fixed slice");
+        if source_id != *shard_id.as_bytes() {
+            return Err(Error::InvalidPlaintextMetadata { shard_id });
+        }
+        let stored_key_commitment: [u8; 32] = bytes[80..112].try_into().expect("fixed slice");
+        if stored_key_commitment != key_commitment {
+            return Err(Error::PlaintextKeyMismatch { shard_id });
+        }
+        Ok(Self {
+            source_id,
+            plaintext_id: bytes[48..80].try_into().expect("fixed slice"),
+            key_commitment: stored_key_commitment,
+            plaintext_bytes: u64::from_le_bytes(bytes[112..120].try_into().expect("fixed slice")),
+        })
+    }
+}
+
+fn plaintext_meta_path(path: &Path) -> PathBuf {
+    path.with_extension("spk.meta")
+}
+
+async fn open_plaintext_hit(
+    path: &Path,
+    meta_path: &Path,
+    shard_id: ShardId,
+    key_commitment: [u8; 32],
+) -> Result<Option<(AsyncObjectReader, PlaintextMetadata)>> {
+    let metadata_bytes = match tokio::fs::read(meta_path).await {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(io_error("read plaintext cache metadata", meta_path, source)),
+    };
+    let metadata = match PlaintextMetadata::decode(&metadata_bytes, shard_id, key_commitment) {
+        Ok(metadata) => metadata,
+        Err(Error::InvalidPlaintextMetadata { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let Some(reader) = open_file_if_expected_size(path, metadata.plaintext_bytes).await? else {
+        return Ok(None);
+    };
+    Ok(Some((reader, metadata)))
+}
+
+fn verify_plaintext_reader(
+    mut reader: AsyncObjectReader,
+    metadata: PlaintextMetadata,
+    shard_id: ShardId,
+) -> AsyncObjectReader {
+    let stream = try_stream! {
+        let mut hasher = blake3::Hasher::new();
+        let mut byte_size = 0_u64;
+        let mut buffer = vec![0_u8; 1024 * 1024];
+        loop {
+            let read = reader.read(&mut buffer).await
+                .map_err(|source| Error::Io {
+                    operation: "read plaintext cache entry",
+                    path: shard_id.to_string(),
+                    source,
+                })?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            byte_size = byte_size.saturating_add(read as u64);
+            yield Bytes::copy_from_slice(&buffer[..read]);
+        }
+        if byte_size != metadata.plaintext_bytes
+            || hasher.finalize().as_bytes() != &metadata.plaintext_id
+        {
+            Err(Error::IdentityMismatch { shard_id })?;
+        }
+    };
+    Box::pin(StreamReader::new(
+        stream.map_err(|error: Error| std::io::Error::other(error)),
+    ))
+}
+
+fn account_remote(
+    metrics: &CacheMetrics,
+    hasher: &mut blake3::Hasher,
+    bytes_read: &mut u64,
+    bytes: &[u8],
+) {
+    hasher.update(bytes);
+    *bytes_read = bytes_read.saturating_add(bytes.len() as u64);
+    metrics
+        .0
+        .downloaded_bytes
+        .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+}
+
+async fn write_plain_chunk(
+    file: &mut tokio::fs::File,
+    path: &Path,
+    hasher: &mut blake3::Hasher,
+    byte_size: &mut u64,
+    bytes: &[u8],
+) -> Result<()> {
+    file.write_all(bytes)
+        .await
+        .map_err(|source| io_error("write plaintext temporary entry", path, source))?;
+    hasher.update(bytes);
+    *byte_size = byte_size.saturating_add(bytes.len() as u64);
+    Ok(())
+}
+
+async fn publish_file(temporary: &Path, final_path: &Path, shard_id: ShardId) -> Result<()> {
+    match tokio::fs::hard_link(temporary, final_path).await {
+        Ok(()) => {}
+        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Error::InvalidPlaintextMetadata { shard_id });
+        }
+        Err(source) => {
+            return Err(io_error(
+                "publish plaintext cache entry",
+                final_path,
+                source,
+            ));
+        }
+    }
+    tokio::fs::remove_file(temporary)
+        .await
+        .map_err(|source| io_error("remove plaintext temporary entry", temporary, source))
+}
+
+async fn publish_plaintext_metadata(path: &Path, metadata: PlaintextMetadata) -> Result<()> {
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = path.with_extension(format!("meta.tmp-{}-{sequence}", std::process::id()));
+    let mut file = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .await
+        .map_err(|source| io_error("create plaintext cache metadata", &temporary, source))?;
+    file.write_all(&metadata.encode())
+        .await
+        .map_err(|source| io_error("write plaintext cache metadata", &temporary, source))?;
+    file.sync_all()
+        .await
+        .map_err(|source| io_error("sync plaintext cache metadata", &temporary, source))?;
+    drop(file);
+    tokio::fs::hard_link(&temporary, path)
+        .await
+        .map_err(|source| io_error("publish plaintext cache metadata", path, source))?;
+    tokio::fs::remove_file(&temporary)
+        .await
+        .map_err(|source| io_error("remove plaintext cache metadata", &temporary, source))
+}
+
+async fn remove_plaintext_entry(path: &Path, meta_path: &Path) -> Result<()> {
+    for target in [path, meta_path] {
+        match tokio::fs::remove_file(target).await {
+            Ok(()) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(io_error("remove plaintext cache entry", target, source)),
         }
     }
     Ok(())
@@ -531,10 +944,10 @@ impl Drop for CacheMutationLock {
 mod tests {
     use bytes::Bytes;
     use futures_util::stream;
-    use shardpack_format::{ShardWriter, WriterOptions};
+    use shardpack_format::{AsyncShardReader, EncryptionKey, ShardWriter, WriterOptions};
     use tokio::io::AsyncReadExt;
 
-    use super::{DOWNLOAD_LOCK_DIRECTORY, LocalCache};
+    use super::{DOWNLOAD_LOCK_DIRECTORY, LocalCache, plaintext_meta_path};
 
     async fn publish_remote(
         store: &shardpack_storage::Store,
@@ -600,6 +1013,102 @@ mod tests {
         assert_eq!(metrics.misses, 1);
         assert_eq!(metrics.hits, 1);
         assert_eq!(metrics.downloaded_bytes, bytes.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn plaintext_cache_trains_during_fill_then_reads_without_decryption() {
+        let remote_root = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let store = shardpack_storage::Store::filesystem(remote_root.path()).unwrap();
+        let key = EncryptionKey::new([0x5a; 32]);
+        let mut writer =
+            ShardWriter::new_encrypted(Vec::new(), WriterOptions::default(), key.clone()).unwrap();
+        writer.add_record([1; 16], 7, b"first").unwrap();
+        writer.add_record([2; 16], 9, b"second").unwrap();
+        let (ciphertext, summary) = writer.finish().unwrap();
+        let object_key = "shards/encrypted.spk";
+        store
+            .write_bytes_immutable(object_key, Bytes::from(ciphertext))
+            .await
+            .unwrap();
+
+        let id = shardpack_manifest::ShardId(summary.shard_id);
+        let cache = LocalCache::new(cache_root.path()).with_plaintext(key);
+        let cold = cache
+            .open_object(&store, object_key, id, summary.byte_size)
+            .await
+            .unwrap();
+        assert!(cold.plaintext);
+        let mut first_pass = AsyncShardReader::new(cold.reader).await.unwrap();
+        assert_eq!(
+            first_pass.next_record().await.unwrap().unwrap().payload,
+            b"first"[..]
+        );
+        assert_eq!(
+            first_pass.next_record().await.unwrap().unwrap().payload,
+            b"second"[..]
+        );
+        assert!(first_pass.next_record().await.unwrap().is_none());
+        assert!(cache.path_for(id).is_file());
+
+        let wrong_key_cache =
+            LocalCache::new(cache_root.path()).with_plaintext(EncryptionKey::new([0x99; 32]));
+        assert!(matches!(
+            wrong_key_cache
+                .open_object(&store, object_key, id, summary.byte_size)
+                .await,
+            Err(super::Error::PlaintextKeyMismatch { .. })
+        ));
+
+        store.delete(object_key).await.unwrap();
+        let hot = cache
+            .open_object(&store, object_key, id, summary.byte_size)
+            .await
+            .unwrap();
+        assert!(hot.plaintext);
+        let mut second_pass = AsyncShardReader::new(hot.reader).await.unwrap();
+        assert_eq!(
+            second_pass.next_record().await.unwrap().unwrap().payload,
+            b"first"[..]
+        );
+        assert_eq!(
+            second_pass.next_record().await.unwrap().unwrap().payload,
+            b"second"[..]
+        );
+        assert!(second_pass.next_record().await.unwrap().is_none());
+        let metrics = cache.metrics().snapshot();
+        assert_eq!(metrics.misses, 1);
+        assert_eq!(metrics.hits, 1);
+        assert_eq!(metrics.downloaded_bytes, summary.byte_size);
+    }
+
+    #[tokio::test]
+    async fn plaintext_cache_never_publishes_with_the_wrong_key() {
+        let remote_root = tempfile::tempdir().unwrap();
+        let cache_root = tempfile::tempdir().unwrap();
+        let store = shardpack_storage::Store::filesystem(remote_root.path()).unwrap();
+        let mut writer = ShardWriter::new_encrypted(
+            Vec::new(),
+            WriterOptions::default(),
+            EncryptionKey::new([1; 32]),
+        )
+        .unwrap();
+        writer.add_record([1; 16], 0, b"secret").unwrap();
+        let (ciphertext, summary) = writer.finish().unwrap();
+        let object_key = "shards/wrong-key.spk";
+        store
+            .write_bytes_immutable(object_key, Bytes::from(ciphertext))
+            .await
+            .unwrap();
+        let id = shardpack_manifest::ShardId(summary.shard_id);
+        let cache = LocalCache::new(cache_root.path()).with_plaintext(EncryptionKey::new([2; 32]));
+        let mut reader = cache
+            .open(&store, object_key, id, summary.byte_size)
+            .await
+            .unwrap();
+        assert!(reader.read_to_end(&mut Vec::new()).await.is_err());
+        assert!(!cache.path_for(id).exists());
+        assert!(!plaintext_meta_path(&cache.path_for(id)).exists());
     }
 
     #[tokio::test]

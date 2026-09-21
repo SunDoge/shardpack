@@ -81,6 +81,10 @@
 - Next: single-process Python materialization with batched PyO3 admission, one
   deterministic Rust shard packer, bounded local staging, concurrent uploads,
   explicit AES encryption options, and single-owner layout publication.
+- Done: credential-free read-only HTTP stores support public B2/Cloudflare and
+  untrusted mirrors without placing upload credentials on training nodes.
+- Done: encrypted cold reads can train while atomically constructing a verified
+  plaintext NVMe cache; warm epochs avoid network and AEAD work.
 - Deferred: multi-process fragment-manifest materialization, optional Lance input,
   and framework-specific tensor decoders.
 

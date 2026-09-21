@@ -22,7 +22,12 @@ pub struct NetworkPrefetch {
 pub(crate) struct PrefetchQueue {
     options: NetworkPrefetch,
     scheduled_index: usize,
-    readers: VecDeque<(usize, AsyncObjectReader)>,
+    readers: VecDeque<(usize, PrefetchedObject)>,
+}
+
+pub(crate) struct PrefetchedObject {
+    pub(crate) reader: AsyncObjectReader,
+    pub(crate) plaintext: bool,
 }
 
 impl PrefetchQueue {
@@ -57,7 +62,7 @@ impl PrefetchQueue {
         cache: Option<&LocalCache>,
         shards: &[proto::ShardMeta],
         shard_order: &[usize],
-    ) -> Result<Option<AsyncObjectReader>> {
+    ) -> Result<Option<PrefetchedObject>> {
         self.fill(stores, cache, shards, shard_order)?;
         let Some((index, reader)) = self.readers.pop_front() else {
             return Ok(None);
@@ -114,12 +119,15 @@ fn spawn_prefetch(
     shard_id: ShardId,
     expected_bytes: u64,
     byte_limit: usize,
-) -> AsyncObjectReader {
+) -> PrefetchedObject {
     type Chunk = std::result::Result<(Bytes, OwnedSemaphorePermit), IoError>;
     let semaphore = Arc::new(Semaphore::new(byte_limit));
     let chunk_bytes = byte_limit.min(1024 * 1024);
     let buffered_chunks = byte_limit.div_ceil(chunk_bytes);
     let (sender, mut receiver) = mpsc::channel::<Chunk>(buffered_chunks);
+    let plaintext = cache
+        .as_ref()
+        .is_some_and(|cache| cache.mode() == shardpack_cache::CacheMode::Plaintext);
     tokio::spawn(async move {
         let source = match cache {
             Some(cache) => cache
@@ -178,5 +186,8 @@ fn spawn_prefetch(
             }
         }
     };
-    Box::pin(StreamReader::new(stream))
+    PrefetchedObject {
+        reader: Box::pin(StreamReader::new(stream)),
+        plaintext,
+    }
 }

@@ -94,10 +94,18 @@ the key ID:
 
 ```python
 loader = dataset.records(
+    cache_dir="/local-nvme/shardpack",
+    cache_mode="plaintext",
     encryption_key_id="kms://training/key-7",
     encryption_key=key_bytes,  # exactly 32 bytes
 )
 ```
+
+`cache_mode="plaintext"` requires an encrypted layout and its external key.
+During the first epoch, authenticated blocks reach the loader while a plaintext,
+still-compressed `.spk` is written to NVMe. Publication is atomic after complete
+remote identity verification; later epochs no longer decrypt. Keep the default
+`"ciphertext"` mode when local disks are outside the trusted boundary.
 
 ## PyTorch worker integration
 

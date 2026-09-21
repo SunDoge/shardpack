@@ -178,6 +178,15 @@ checksum invalidates the content-addressed cache entry before retry, causing the
 immutable shard to be fetched and atomically published again. Local regular-file
 I/O retains the common `AsyncRead` interface (Tokio may use its blocking file-I/O
 pool internally), keeping S3 and cache sources interchangeable above this layer.
+
+For encrypted layouts on trusted ephemeral GPU hosts, a plaintext cache mode
+authenticates each cold block and rewrites only its physical framing: the record
+directory and already-compressed payload are not decompressed or re-encoded.
+Training consumes that rewritten stream immediately while it is persisted to a
+temporary file. The cache publishes only after the complete remote ciphertext
+matches its manifest `ShardId`; a sidecar binds the derived plaintext BLAKE3 and
+length to that source ID. Warm epochs verify and read the local plaintext shard
+without repeating AEAD decryption.
 Concurrent cold misses are coalesced across processes by a per-shard, asynchronously
 polled filesystem lock: one reader streams from object storage while waiters consume
 the verified local entry afterward. Locks use 65,536 hash stripes, bounding internal

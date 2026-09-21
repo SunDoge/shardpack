@@ -68,12 +68,19 @@ impl Default for CatalogConfig {
 pub enum StoreConfig {
     S3(S3Config),
     Filesystem(FilesystemConfig),
+    Http(HttpConfig),
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FilesystemConfig {
     pub root: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpConfig {
+    pub base_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -203,6 +210,7 @@ impl StoreConfig {
         let result = match self {
             Self::Filesystem(config) => Store::filesystem(&config.root),
             Self::S3(config) => Store::s3(&config.options(store_id)?),
+            Self::Http(config) => Store::http(&config.base_url),
         };
         result.map_err(|source| Error::Storage {
             store_id: store_id.to_owned(),
@@ -308,6 +316,10 @@ region = "us-east-1"
 type = "inline"
 access_key_id = "visible-id"
 secret_access_key = "must-not-leak"
+
+[stores.public]
+type = "http"
+base_url = "https://data.example.com/datasets"
 "#,
                 directory.path().display()
             ),
@@ -317,7 +329,7 @@ secret_access_key = "must-not-leak"
         let config = ShardPackConfig::load(&config_path).unwrap();
         assert_eq!(config.selected_store_id(None).unwrap(), "primary");
         assert_eq!(config.catalog_store_id().unwrap(), "primary");
-        assert_eq!(config.stores.len(), 2);
+        assert_eq!(config.stores.len(), 3);
         let StoreConfig::S3(archive) = &config.stores["archive"] else {
             panic!()
         };
@@ -330,7 +342,7 @@ secret_access_key = "must-not-leak"
         assert_eq!(secret_access_key.expose_secret(), "must-not-leak");
         assert!(!format!("{config:?}").contains("must-not-leak"));
         let registry = config.build_registry().unwrap();
-        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.len(), 3);
     }
 
     #[test]
