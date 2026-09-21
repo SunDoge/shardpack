@@ -46,12 +46,21 @@ pub struct ShardPackConfig {
     pub catalog: CatalogConfig,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogConfig {
     pub store: Option<String>,
     #[serde(default = "catalog_prefix")]
     pub prefix: String,
+}
+
+impl Default for CatalogConfig {
+    fn default() -> Self {
+        Self {
+            store: None,
+            prefix: catalog_prefix(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -340,5 +349,23 @@ unexpected = true
         )
         .unwrap();
         assert!(ShardPackConfig::load(&config_path).is_err());
+    }
+
+    #[test]
+    fn omitted_catalog_uses_the_normalized_default_prefix() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+default_store = "local"
+[stores.local]
+type = "filesystem"
+root = "."
+"#,
+        )
+        .unwrap();
+        let config = ShardPackConfig::load(&config_path).unwrap();
+        assert_eq!(config.catalog.prefix, "catalog");
     }
 }

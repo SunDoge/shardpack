@@ -181,6 +181,24 @@ offset the cost and negligible size benefit of passing the dominant JPEG data
 through block compression. This supports `None` as the default for media-heavy
 and ordinary image-plus-metadata layouts.
 
+As a text-only comparison, the analyzer was run on the official Salesforce
+WikiText-2 raw training split. Each non-empty text row became one opaque record:
+
+```text
+sample_records=23767
+sample_payload_bytes=10914845
+sample_blocks=1
+none_estimated_bytes=11485381
+zstd_estimated_bytes=5175808
+zstd_ratio=0.450643
+savings_percent=54.936
+recommendation=zstd threshold_percent=10.000
+```
+
+Writing both layouts confirmed the estimates exactly: the uncompressed shard
+was 11,485,381 bytes and the Zstd level 1 shard was 5,175,808 bytes. Unlike the
+COCO result, this workload clearly justifies block compression.
+
 ## RustFS / S3-compatible storage
 
 The retained loopback benchmark transfers a 256 MiB object:
