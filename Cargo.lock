@@ -377,6 +377,7 @@ checksum = "b85f248a4de22d204ceabc6299d89d2c70fbd7f09fea53c06c852369652d8139"
 dependencies = [
  "pathdiff",
  "serde_core",
+ "serde_json",
  "toml",
  "winnow",
 ]
@@ -2390,6 +2391,7 @@ dependencies = [
  "hex",
  "pyo3",
  "shardpack-cache",
+ "shardpack-cli",
  "shardpack-config",
  "shardpack-core",
  "shardpack-format",

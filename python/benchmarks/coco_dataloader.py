@@ -70,8 +70,8 @@ def run_threaded_epoch(
     augment: str,
 ) -> dict[str, float | int | str]:
     source = ShardPackSource(
-        config,
         layout,
+        config_path=config,
         cache_dir=cache,
         network_concurrency=2,
         network_prefetch_bytes=128 * 1024**2,

@@ -9,6 +9,14 @@ import shardpack
 DATA = Path(__file__).parent / "data"
 
 
+def test_config_and_config_path_are_mutually_exclusive(tmp_path: Path) -> None:
+    config = {"stores": {"local": {"type": "filesystem", "root": tmp_path}}}
+    with pytest.raises(ValueError, match="exactly one"):
+        shardpack.Dataset("layout.pb")
+    with pytest.raises(ValueError, match="exactly one"):
+        shardpack.Dataset("layout.pb", config=config, config_path=tmp_path / "config.toml")
+
+
 def test_framework_neutral_threaded_loader_batches_and_consumes_on_caller_thread() -> None:
     caller_thread = threading.get_ident()
     decode_threads: set[int] = set()
@@ -42,17 +50,11 @@ def test_framework_neutral_threaded_loader_batches_and_consumes_on_caller_thread
 def test_buffer_writer_materializes_numpy_batches(tmp_path: Path) -> None:
     object_root = tmp_path / "objects"
     staging = tmp_path / "staging"
-    config = tmp_path / "shardpack.toml"
-    config.write_text(
-        f'''\
-version = 1
-default_store = "local"
-
-[stores.local]
-type = "filesystem"
-root = "{object_root}"
-'''
-    )
+    config = {
+        "version": 1,
+        "default_store": "local",
+        "stores": {"local": {"type": "filesystem", "root": object_root}},
+    }
     payloads = [b"alpha", b"", b"charlie-data"]
     payload_data = np.frombuffer(b"".join(payloads), dtype=np.uint8).copy()
     offsets = np.array([0, 5, 5, 17], dtype=np.uint64)
@@ -60,9 +62,9 @@ root = "{object_root}"
     flags = np.array([3, 0, 9], dtype=np.uint32)
 
     writer = shardpack.DatasetWriter(
-        config,
         bytes([0x61]) * 32,
         staging,
+        config=config,
         target_shard_bytes=64,
         target_block_bytes=32,
         queue_batches=1,
@@ -80,7 +82,7 @@ root = "{object_root}"
     layout_key = writer.finish()
     assert writer.finish() == layout_key
 
-    dataset = shardpack.Dataset(config, layout_key)
+    dataset = shardpack.Dataset(layout_key, config=config)
     records = list(dataset.records())
     assert {record.sample_id: (record.flags, bytes(record.payload)) for record in records} == {
         bytes([0]) * 16: (3, b"alpha"),
@@ -103,9 +105,9 @@ root = "{tmp_path / "objects"}"
 '''
     )
     writer = shardpack.DatasetWriter(
-        config,
         bytes([0x62]) * 32,
         tmp_path / "staging",
+        config_path=config,
         max_batch_records=1,
         max_batch_bytes=8,
     )
@@ -147,7 +149,7 @@ root = "{DATA}"
 '''
     )
     layout_key = (DATA / "layout-key.txt").read_text().strip()
-    return shardpack.Dataset(config, layout_key)
+    return shardpack.Dataset(layout_key, config_path=config)
 
 
 def test_simple_record_reader_preserves_records(dataset: shardpack.Dataset) -> None:
@@ -236,13 +238,13 @@ root = "{DATA}"
     rank_zero = {
         record.sample_id
         for record in shardpack.ShardPackSource(
-            config, dataset.layout_key, rank=0, world_size=2, shard_seed=19
+            dataset.layout_key, config_path=config, rank=0, world_size=2, shard_seed=19
         )
     }
     rank_one = {
         record.sample_id
         for record in shardpack.ShardPackSource(
-            config, dataset.layout_key, rank=1, world_size=2, shard_seed=19
+            dataset.layout_key, config_path=config, rank=1, world_size=2, shard_seed=19
         )
     }
 
@@ -265,17 +267,25 @@ root = "{DATA}"
 '''
     )
     layout_key = (DATA / "encrypted-layout-key.txt").read_text().strip()
-    dataset = shardpack.Dataset(config, layout_key)
+    dataset = shardpack.Dataset(layout_key, config_path=config)
 
     with pytest.raises(ValueError, match="provided together"):
         dataset.records(encryption_key_id="test://python-key")
     with pytest.raises(ValueError, match="exactly 32 bytes"):
         dataset.records(encryption_key_id="test://python-key", encryption_key=b"short")
+    key_path = tmp_path_factory.mktemp("keys") / "dataset.key"
+    key_path.write_bytes(bytes([0x77]) * 32)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        dataset.records(
+            encryption_key_id="test://python-key",
+            encryption_key=bytes([0x77]) * 32,
+            encryption_key_path=key_path,
+        )
 
     records = list(
         dataset.records(
             encryption_key_id="test://python-key",
-            encryption_key=bytes([0x77]) * 32,
+            encryption_key_path=key_path,
         )
     )
     assert len(records) == 7

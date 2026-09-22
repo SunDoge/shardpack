@@ -105,7 +105,11 @@ The Python surface should mirror these fields and require encryption values as a
 group:
 
 ```python
-DatasetWriter(..., encryption_key_id="kms://training/key-7", encryption_key=key_bytes)
+DatasetWriter(
+    ...,
+    encryption_key_id="kms://training/key-7",
+    encryption_key_path="/dev/shm/shardpack-dataset.key",
+)
 ```
 
 ## Threads and processes

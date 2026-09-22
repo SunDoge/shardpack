@@ -47,8 +47,8 @@ def keep_list(samples: list[Any]) -> list[Any]:
 
 def source(args: argparse.Namespace) -> ShardPackSource:
     return ShardPackSource(
-        args.config,
         args.layout,
+        config_path=args.config,
         cache_dir=args.cache,
         network_concurrency=2,
         network_prefetch_bytes=128 * 1024**2,
@@ -100,7 +100,7 @@ def main() -> None:
     cv2.setNumThreads(1)
     torch.set_num_threads(1)
 
-    dataset = Dataset(args.config, args.layout)
+    dataset = Dataset(args.layout, config_path=args.config)
     measure("rust-record-stream", lambda: sum(1 for _ in dataset.records(cache_dir=args.cache)))
     measure("thread-scheduling", lambda: consume_threaded(args, metadata_only, None))
     measure("jpeg-decode", lambda: consume_threaded(args, jpeg_only, None))

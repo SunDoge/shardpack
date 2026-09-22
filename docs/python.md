@@ -26,6 +26,22 @@ mise run test:python
 mise run build:python
 ```
 
+Every storage-facing API accepts exactly one of `config` or `config_path`.
+Inline mappings are convenient for tests and accept `Path` values directly:
+
+```python
+config = {
+    "version": 1,
+    "default_store": "local",
+    "stores": {
+        "local": {"type": "filesystem", "root": tmp_path / "objects"},
+    },
+}
+```
+
+The mapping is parsed and validated by the same Rust configuration layer as a
+TOML file, including unknown-field rejection and `SHARDPACK__...` overrides.
+
 ## Writing datasets
 
 `DatasetWriter` accepts packed CPU buffers without linking against the NumPy C
@@ -42,12 +58,12 @@ offsets = np.array([0, len(payloads[0]), sum(map(len, payloads))], dtype=np.uint
 sample_ids = np.zeros((2, 16), dtype=np.uint8)
 
 writer = DatasetWriter(
-    config="~/.config/shardpack/config.toml",
     snapshot_id=bytes.fromhex("00" * 32),
     staging_dir="/local-nvme/shardpack-staging",
+    config_path="~/.config/shardpack/config.toml",
     store="public-datasets",
     encryption_key_id="kms://training/key-7",
-    encryption_key=key_bytes,
+    encryption_key_path="/dev/shm/shardpack-dataset.key",
 )
 writer.write_batch(data, offsets, sample_ids)
 layout_key = writer.finish()
@@ -78,8 +94,8 @@ production training loader.
 from shardpack import Dataset
 
 dataset = Dataset(
-    config="~/.config/shardpack/config.toml",
     layout=layout_key,
+    config_path="~/.config/shardpack/config.toml",
     store="public-datasets",
 )
 
@@ -90,7 +106,7 @@ for record in dataset.records(
     network_concurrency=4,
     network_prefetch_bytes=512 * 1024**2,
     encryption_key_id="kms://training/key-7",
-    encryption_key=key_bytes,
+    encryption_key_path="/dev/shm/shardpack-dataset.key",
 ):
     assert len(record.sample_id) == 16
     consume(record.flags, record.payload)
@@ -179,8 +195,8 @@ ordered collation, and batch prefetch:
 from shardpack import ShardPackSource, ThreadedLoader
 
 source = ShardPackSource(
-    config="shardpack.toml",
     layout="layouts/<layout-id>.layout.pb",
+    config_path="shardpack.toml",
     rank=rank,
     world_size=world_size,
     cache_dir="/local-nvme/shardpack",
@@ -220,8 +236,8 @@ from shardpack import ShardPackSource
 from shardpack.pytorch import ThreadedDataLoader
 
 source = ShardPackSource(
-    config="shardpack.toml",
     layout="layouts/<layout-id>.layout.pb",
+    config_path="shardpack.toml",
     cache_dir="/local-nvme/shardpack",
     shuffle_max_records=4096,
     shuffle_max_bytes=256 * 1024**2,

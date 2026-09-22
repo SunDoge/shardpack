@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from os import PathLike
 from typing import Any
 
-from ._native import Dataset, EpochScheduler
+from ._native import EpochScheduler
+from .api import Config, Dataset
 
 
 @dataclass(frozen=True)
@@ -49,9 +50,10 @@ class ShardPackSource:
 
     def __init__(
         self,
-        config: str | PathLike[str],
         layout: str,
         *,
+        config: Config | None = None,
+        config_path: str | PathLike[str] | None = None,
         store: str | None = None,
         epoch: int = 0,
         shard_seed: int = 0,
@@ -68,10 +70,14 @@ class ShardPackSource:
         auto_advance_epoch: bool = True,
         encryption_key_id: str | None = None,
         encryption_key: bytes | None = None,
+        encryption_key_path: str | PathLike[str] | None = None,
     ) -> None:
         if (rank is None) != (world_size is None):
             raise ValueError("rank and world_size must be provided together")
-        self.config = os.fspath(config)
+        if (config is None) == (config_path is None):
+            raise ValueError("exactly one of config or config_path is required")
+        self.config = config
+        self.config_path = None if config_path is None else os.fspath(config_path)
         self.layout = layout
         self.store = store
         self.epoch = epoch
@@ -90,6 +96,9 @@ class ShardPackSource:
         self._epoch_scheduler = EpochScheduler(epoch, shard_seed, shuffle_seed)
         self.encryption_key_id = encryption_key_id
         self.encryption_key = encryption_key
+        self.encryption_key_path = (
+            None if encryption_key_path is None else os.fspath(encryption_key_path)
+        )
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -106,7 +115,12 @@ class ShardPackSource:
         epoch, shard_seed, shuffle_seed = self._epoch_scheduler.next()
         if not self.auto_advance_epoch:
             self._epoch_scheduler.set_epoch(epoch)
-        dataset = Dataset(self.config, self.layout, self.store)
+        dataset = Dataset(
+            self.layout,
+            config=self.config,
+            config_path=self.config_path,
+            store=self.store,
+        )
         yield from dataset.records(
             cache_dir=self.cache_dir,
             cache_max_bytes=self.cache_max_bytes,
@@ -124,6 +138,7 @@ class ShardPackSource:
             workers_per_rank=1,
             encryption_key_id=self.encryption_key_id,
             encryption_key=self.encryption_key,
+            encryption_key_path=self.encryption_key_path,
         )
 
 

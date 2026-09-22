@@ -30,6 +30,24 @@ use shardpack_storage::StoreRegistry;
 const DEFAULT_WRITER_MAX_BATCH_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_WRITER_MAX_BATCH_RECORDS: usize = 1_000_000;
 
+fn load_config(
+    config_json: Option<&str>,
+    config_path: Option<&std::path::Path>,
+) -> PyResult<shardpack_config::ShardPackConfig> {
+    match (config_json, config_path) {
+        (Some(value), None) => {
+            shardpack_config::ShardPackConfig::from_json(value).map_err(runtime_error)
+        }
+        (None, Some(path)) => shardpack_config::ShardPackConfig::load(path).map_err(runtime_error),
+        (Some(_), Some(_)) => Err(PyValueError::new_err(
+            "config and config_path are mutually exclusive",
+        )),
+        (None, None) => Err(PyValueError::new_err(
+            "exactly one of config or config_path is required",
+        )),
+    }
+}
+
 #[pyclass(module = "shardpack._native", name = "EpochScheduler")]
 struct PyEpochScheduler {
     process_id: u32,
@@ -167,12 +185,13 @@ impl PyDatasetWriter {
 #[pymethods]
 impl PyDatasetWriter {
     #[new]
-    #[pyo3(signature = (config, snapshot_id, staging_dir, *, store=None, target_shard_bytes=1_073_741_824, max_shard_bytes=None, target_block_bytes=16_777_216, block_codec="none", zstd_level=1, object_prefix="shards", layout_prefix="layouts", queue_batches=2, max_batch_records=DEFAULT_WRITER_MAX_BATCH_RECORDS, max_batch_bytes=DEFAULT_WRITER_MAX_BATCH_BYTES, encryption_key_id=None, encryption_key=None))]
+    #[pyo3(signature = (snapshot_id, staging_dir, *, config=None, config_path=None, store=None, target_shard_bytes=1_073_741_824, max_shard_bytes=None, target_block_bytes=16_777_216, block_codec="none", zstd_level=1, object_prefix="shards", layout_prefix="layouts", queue_batches=2, max_batch_records=DEFAULT_WRITER_MAX_BATCH_RECORDS, max_batch_bytes=DEFAULT_WRITER_MAX_BATCH_BYTES, encryption_key_id=None, encryption_key=None, encryption_key_path=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        config: PathBuf,
         snapshot_id: &Bound<'_, PyBytes>,
         staging_dir: PathBuf,
+        config: Option<String>,
+        config_path: Option<PathBuf>,
         store: Option<String>,
         target_shard_bytes: u64,
         max_shard_bytes: Option<u64>,
@@ -186,6 +205,7 @@ impl PyDatasetWriter {
         max_batch_bytes: usize,
         encryption_key_id: Option<String>,
         encryption_key: Option<&Bound<'_, PyBytes>>,
+        encryption_key_path: Option<PathBuf>,
     ) -> PyResult<Self> {
         if queue_batches == 0 {
             return Err(PyValueError::new_err(
@@ -215,10 +235,10 @@ impl PyDatasetWriter {
                 ));
             }
         };
-        let encryption = parse_encryption(encryption_key_id, encryption_key)?
+        let encryption = parse_encryption(encryption_key_id, encryption_key, encryption_key_path)?
             .map(|(key_id, key)| MaterializeEncryption { key_id, key });
         std::fs::create_dir_all(&staging_dir).map_err(runtime_error)?;
-        let config = shardpack_config::ShardPackConfig::load(&config).map_err(runtime_error)?;
+        let config = load_config(config.as_deref(), config_path.as_deref())?;
         let store_id = config
             .selected_store_id(store.as_deref())
             .map_err(runtime_error)?
@@ -437,17 +457,39 @@ fn runtime_error(error: impl std::fmt::Display) -> PyErr {
 fn parse_encryption(
     key_id: Option<String>,
     key: Option<&Bound<'_, PyBytes>>,
+    key_path: Option<PathBuf>,
 ) -> PyResult<Option<(String, shardpack_format::EncryptionKey)>> {
-    match (key_id, key) {
-        (None, None) => Ok(None),
-        (Some(key_id), Some(key)) => {
-            let bytes: [u8; 32] = key.as_bytes().try_into().map_err(|_| {
+    if key.is_some() && key_path.is_some() {
+        return Err(PyValueError::new_err(
+            "encryption_key and encryption_key_path are mutually exclusive",
+        ));
+    }
+    let bytes =
+        match (key, key_path) {
+            (None, None) => None,
+            (Some(key), None) => Some(key.as_bytes().try_into().map_err(|_| {
                 PyValueError::new_err("encryption_key must contain exactly 32 bytes")
-            })?;
+            })?),
+            (None, Some(path)) => {
+                let value = std::fs::read(&path).map_err(|error| {
+                    PyRuntimeError::new_err(format!(
+                        "cannot read encryption key file {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                Some(value.try_into().map_err(|_| {
+                    PyValueError::new_err("encryption key file must contain exactly 32 bytes")
+                })?)
+            }
+            (Some(_), Some(_)) => unreachable!(),
+        };
+    match (key_id, bytes) {
+        (None, None) => Ok(None),
+        (Some(key_id), Some(bytes)) => {
             Ok(Some((key_id, shardpack_format::EncryptionKey::new(bytes))))
         }
         _ => Err(PyValueError::new_err(
-            "encryption_key_id and encryption_key must be provided together",
+            "encryption_key_id and one of encryption_key or encryption_key_path must be provided together",
         )),
     }
 }
@@ -558,14 +600,15 @@ struct PyDataset {
 #[pymethods]
 impl PyDataset {
     #[new]
-    #[pyo3(signature = (config, layout, store=None))]
+    #[pyo3(signature = (layout, *, config=None, config_path=None, store=None))]
     fn new(
         py: Python<'_>,
-        config: PathBuf,
         layout: String,
+        config: Option<String>,
+        config_path: Option<PathBuf>,
         store: Option<String>,
     ) -> PyResult<Self> {
-        let config = shardpack_config::ShardPackConfig::load(&config).map_err(runtime_error)?;
+        let config = load_config(config.as_deref(), config_path.as_deref())?;
         let store_id = config
             .selected_store_id(store.as_deref())
             .map_err(runtime_error)?
@@ -611,7 +654,7 @@ impl PyDataset {
         &self.layout_key
     }
 
-    #[pyo3(signature = (*, cache_dir=None, cache_max_bytes=274_877_906_944, cache_mode="ciphertext", network_concurrency=2, network_prefetch_bytes=67_108_864, shuffle_max_records=0, shuffle_max_bytes=0, shuffle_seed=1, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None))]
+    #[pyo3(signature = (*, cache_dir=None, cache_max_bytes=274_877_906_944, cache_mode="ciphertext", network_concurrency=2, network_prefetch_bytes=67_108_864, shuffle_max_records=0, shuffle_max_bytes=0, shuffle_seed=1, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None, encryption_key_path=None))]
     #[allow(clippy::too_many_arguments)]
     fn records(
         &self,
@@ -631,13 +674,14 @@ impl PyDataset {
         workers_per_rank: usize,
         encryption_key_id: Option<String>,
         encryption_key: Option<&Bound<'_, PyBytes>>,
+        encryption_key_path: Option<PathBuf>,
     ) -> PyResult<PyRecordLoader> {
         if (shuffle_max_records == 0) != (shuffle_max_bytes == 0) {
             return Err(PyValueError::new_err(
                 "shuffle_max_records and shuffle_max_bytes must both be zero or both be non-zero",
             ));
         }
-        let encryption = parse_encryption(encryption_key_id, encryption_key)?;
+        let encryption = parse_encryption(encryption_key_id, encryption_key, encryption_key_path)?;
         let plaintext_cache = match cache_mode {
             "ciphertext" => false,
             "plaintext" => true,
@@ -654,7 +698,7 @@ impl PyDataset {
         }
         if plaintext_cache && encryption.is_none() {
             return Err(PyValueError::new_err(
-                "cache_mode='plaintext' requires encryption_key_id and encryption_key",
+                "cache_mode='plaintext' requires encryption_key_id and key material",
             ));
         }
 
@@ -809,6 +853,11 @@ impl PyRecordLoader {
     }
 }
 
+#[pyfunction]
+fn cli_main(py: Python<'_>, args: Vec<String>) -> i32 {
+    py.detach(|| shardpack_cli::main_from(args))
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDataset>()?;
@@ -816,6 +865,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRecord>()?;
     module.add_class::<PyRecordLoader>()?;
     module.add_class::<PyEpochScheduler>()?;
+    module.add_function(wrap_pyfunction!(cli_main, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

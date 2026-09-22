@@ -67,9 +67,9 @@ root = "{objects}"
         )
 
         writer = DatasetWriter(
-            config,
             bytes([0xB1]) * 32,
             root / "staging",
+            config_path=config,
             target_shard_bytes=64 * 1024**2,
             target_block_bytes=16 * 1024**2,
             block_codec="zstd",
@@ -88,7 +88,7 @@ root = "{objects}"
             writer.write_batch(memoryview(b"".join(payloads)), offsets, memoryview(sample_ids))
         layout = writer.finish()
         write_seconds = time.perf_counter() - started
-        dataset = Dataset(config, layout)
+        dataset = Dataset(layout, config_path=config)
         print(
             "ShardPack write:  ",
             rate(args.records, write_seconds),
@@ -108,8 +108,8 @@ root = "{objects}"
         print("Direct decode:    ", rate(count, direct_seconds))
 
         source = ShardPackSource(
-            config,
             layout,
+            config_path=config,
             cache_dir=root / "cache",
             network_concurrency=2,
             network_prefetch_bytes=128 * 1024**2,

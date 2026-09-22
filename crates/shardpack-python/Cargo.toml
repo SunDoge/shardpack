@@ -15,6 +15,7 @@ bytes.workspace = true
 hex.workspace = true
 pyo3.workspace = true
 shardpack-cache = { path = "../shardpack-cache" }
+shardpack-cli = { path = "../shardpack-cli" }
 shardpack-config = { path = "../shardpack-config" }
 shardpack-core = { path = "../shardpack-core" }
 shardpack-format = { path = "../shardpack-format" }

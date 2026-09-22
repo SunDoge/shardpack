@@ -21,6 +21,74 @@ store and injects key bytes into the writer/reader. ShardPack never persists key
 material. A lost key makes the encrypted layout unrecoverable, so durable standalone
 datasets require independently protected key backups.
 
+## Key files
+
+The simplest deployment model is a raw 32-byte key file. Generate it on a
+trusted machine with the operating system CSPRNG and restrict its permissions:
+
+```bash
+umask 077
+openssl rand 32 -out coco-2026-09-v1.key
+test "$(wc -c < coco-2026-09-v1.key)" -eq 32
+chmod 600 coco-2026-09-v1.key
+```
+
+Do not use a password, UUID, API token, or a 64-byte textual hexadecimal value
+as the AES key. If a secret manager stores only text, store base64 and decode it
+to a raw 32-byte temporary file before starting the reader.
+
+Python accepts either in-memory bytes or a path, never both. Prefer the path for
+training so Python does not retain an immutable, non-zeroizable `bytes` object:
+
+```python
+source = ShardPackSource(
+    layout_key,
+    config=config,
+    encryption_key_id="coco/2026-09/v1",
+    encryption_key_path="/dev/shm/shardpack-coco.key",
+    cache_mode="plaintext",
+    cache_dir="/local-nvme/shardpack",
+)
+```
+
+The native extension reads the file directly, rejects any length other than 32
+bytes, and moves the material into the Rust `EncryptionKey` boundary. Place the
+file on tmpfs such as `/dev/shm` or `/run/user/<uid>`, rather than persistent
+NVMe. Transfer it with SSH/SFTP, a provider secret-file mount, or retrieve it
+from a secret manager. Never place it in the ShardPack TOML/inline config,
+container image, command-line arguments, logs, checkpoint, public bucket, or
+Git repository.
+
+Bitwarden Password Manager is adequate for manual operation. Automated GPU
+provisioning should use Bitwarden Secrets Manager with a machine account scoped
+to the individual dataset secret. The machine access token is itself a secret;
+inject it through the hosting platform, retrieve and decode the dataset key into
+tmpfs, then remove the access token from the training environment where
+practical.
+
+Recommended lifecycle:
+
+```text
+trusted host generates key
+→ independent encrypted backup
+→ secure transfer or secret-manager retrieval
+→ raw 32-byte file in GPU-node tmpfs
+→ first epoch authenticates/decrypts and fills plaintext NVMe cache
+→ later epochs read plaintext cache
+→ training ends
+→ remove key file and plaintext cache before releasing the node
+```
+
+Deleting an ordinary file or using `shred` cannot reliably erase SSD/NVMe media
+because of wear levelling. Keeping the key on tmpfs avoids that problem. Treat a
+plaintext dataset cache as sensitive even though it contains no key.
+
+Use a versioned, non-secret identifier such as `coco/2026-09/v1` for `key_id`.
+Rotation produces a new physical layout under the new key while preserving the
+logical snapshot, record bytes, record count, and content fingerprint. Do not
+retire the previous key until no live, pinned, or rollback-protected layout
+requires it.
+
 Encryption covers both the record directory and compressed payload. Compression
 happens before encryption. Each block is an independent AEAD/recovery unit, so
 sequential streaming and block-boundary Range GET resume remain available.

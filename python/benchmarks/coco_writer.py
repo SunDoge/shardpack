@@ -104,9 +104,9 @@ def main() -> None:
             )
         )
         writer = DatasetWriter(
-            config,
             bytes.fromhex("c0") * 32,
             staging,
+            config_path=config,
             target_shard_bytes=1024**3,
             target_block_bytes=16 * 1024**2,
             block_codec=args.codec,
@@ -163,7 +163,7 @@ def main() -> None:
         verified_records = 0
         if args.verify:
             verify_started = time.perf_counter()
-            dataset = Dataset(config, layout_key)
+            dataset = Dataset(layout_key, config_path=config)
             verified_records = sum(
                 1
                 for _ in dataset.records(

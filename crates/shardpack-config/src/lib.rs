@@ -132,6 +132,21 @@ impl ShardPackConfig {
             .and_then(Self::validate)
     }
 
+    pub fn from_json(value: &str) -> Result<Self> {
+        config::Config::builder()
+            .add_source(config::File::from_str(value, config::FileFormat::Json))
+            .add_source(
+                config::Environment::with_prefix("SHARDPACK")
+                    .prefix_separator("__")
+                    .separator("__")
+                    .try_parsing(true),
+            )
+            .build()
+            .and_then(config::Config::try_deserialize)
+            .map_err(|source| Error::Load { source })
+            .and_then(Self::validate)
+    }
+
     /// Finds the conventional user configuration without making it mandatory.
     #[must_use]
     pub fn discover_path() -> Option<PathBuf> {

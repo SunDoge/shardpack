@@ -1,5 +1,19 @@
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from os import PathLike
+from typing import Any
+
+from .loader import ShardPackSource as ShardPackSource
+from .loader import ThreadedLoader as ThreadedLoader
+
+class EpochScheduler:
+    def __init__(
+        self,
+        initial_epoch: int = 0,
+        shard_seed: int = 0,
+        shuffle_seed: int = 1,
+    ) -> None: ...
+    def next(self) -> tuple[int, int, int]: ...
+    def set_epoch(self, epoch: int) -> None: ...
 
 class Record:
     @property
@@ -18,8 +32,10 @@ class RecordLoader(Iterator[Record]):
 class Dataset:
     def __init__(
         self,
-        config: str | PathLike[str],
         layout: str,
+        *,
+        config: Mapping[str, Any] | None = None,
+        config_path: str | PathLike[str] | None = None,
         store: str | None = None,
     ) -> None: ...
     @property
@@ -40,6 +56,9 @@ class Dataset:
         cache_mode: str = "ciphertext",
         network_concurrency: int = 2,
         network_prefetch_bytes: int = 67_108_864,
+        shuffle_max_records: int = 0,
+        shuffle_max_bytes: int = 0,
+        shuffle_seed: int = 1,
         epoch: int = 0,
         shard_seed: int = 0,
         rank: int = 0,
@@ -48,15 +67,17 @@ class Dataset:
         workers_per_rank: int = 1,
         encryption_key_id: str | None = None,
         encryption_key: bytes | None = None,
+        encryption_key_path: str | PathLike[str] | None = None,
     ) -> RecordLoader: ...
 
 class DatasetWriter:
     def __init__(
         self,
-        config: str | PathLike[str],
         snapshot_id: bytes,
         staging_dir: str | PathLike[str],
         *,
+        config: Mapping[str, Any] | None = None,
+        config_path: str | PathLike[str] | None = None,
         store: str | None = None,
         target_shard_bytes: int = 1_073_741_824,
         max_shard_bytes: int | None = None,
@@ -70,6 +91,7 @@ class DatasetWriter:
         max_batch_bytes: int = 268_435_456,
         encryption_key_id: str | None = None,
         encryption_key: bytes | None = None,
+        encryption_key_path: str | PathLike[str] | None = None,
     ) -> None: ...
     def write_batch(
         self,

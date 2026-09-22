@@ -49,9 +49,9 @@ def test_fory_writer_to_threaded_pytorch_round_trip(tmp_path: Path) -> None:
         offsets.append(offsets[-1] + len(payload))
 
     writer = DatasetWriter(
-        config,
         bytes([0xF0]) * 32,
         tmp_path / "fory-staging",
+        config_path=config,
         target_shard_bytes=256,
         target_block_bytes=128,
     )
@@ -64,7 +64,7 @@ def test_fory_writer_to_threaded_pytorch_round_trip(tmp_path: Path) -> None:
     layout = writer.finish()
 
     loader = ThreadedDataLoader(
-        ShardPackSource(config, layout, cache_dir=tmp_path / "cache"),
+        ShardPackSource(layout, config_path=config, cache_dir=tmp_path / "cache"),
         decode=decode_fory,
         batch_size=4,
         decode_workers=2,
@@ -84,8 +84,8 @@ def test_rust_epoch_and_pool_shuffle_advance_without_iterable_dataset(tmp_path: 
     write_config(config, objects)
     layout = (objects / "layout-key.txt").read_text().strip()
     source = ShardPackSource(
-        config,
         layout,
+        config_path=config,
         shuffle_max_records=3,
         shuffle_max_bytes=1024 * 1024,
         shuffle_seed=71,
