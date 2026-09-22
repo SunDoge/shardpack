@@ -24,3 +24,9 @@ uv pip install \
 
 cd "$PROJECT_ROOT"
 "$TORCH_TEST_ENV/bin/python" -m pytest -q python/tests/test_pytorch_integration.py
+
+if [[ "${SHARDPACK_RUN_FORY_BENCH:-0}" == "1" ]]; then
+    "$TORCH_TEST_ENV/bin/python" python/benchmarks/fory_dataloader.py \
+        --records "${SHARDPACK_BENCH_RECORDS:-100000}" \
+        --workers "${SHARDPACK_BENCH_WORKERS:-4}"
+fi

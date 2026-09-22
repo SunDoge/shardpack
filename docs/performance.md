@@ -41,9 +41,39 @@ loader.
 
 The bounded shuffle pool performs O(1) random eviction when its record-count
 limit binds and allocation-free reservoir selection when its byte limit binds.
-The Python reader is deliberately record-at-a-time and intended for validation;
-the production Rust dataloader can drive batching and checkpointing without
-copying payloads into Python-owned `bytes` first.
+The transitional Python reader is record-at-a-time but exposes each Rust `Bytes`
+payload as a zero-copy read-only memoryview. The production Rust dataloader can
+still avoid the remaining per-record Python object and scheduling overhead by
+driving decode, batching, and checkpointing natively.
+
+## Fory and PyTorch DataLoader
+
+Run the reproducible CPU benchmark with:
+
+```bash
+mise run bench:python-fory
+```
+
+The benchmark uses 100,000 synthetic structured records averaging 129.9 encoded
+bytes, Fory 1.7.3, Zstd level 1, a local filesystem store/cache, Python 3.12, and
+PyTorch 2.14 CPU. A development-host run measured:
+
+| Stage | Throughput |
+| --- | ---: |
+| Fory encode | 1.42–1.46 M records/s, 176–181 MiB/s |
+| ShardPack writer | 2.22–2.40 M records/s, 274–297 MiB/s input |
+| ShardPack memoryview + Fory decode | 0.70–0.75 M records/s |
+| DataLoader, `num_workers=0` | 0.40 M records/s |
+| DataLoader, one persistent spawned worker | 0.11 M records/s |
+| DataLoader, 2–4 persistent spawned workers | 0.09–0.11 M records/s |
+
+The 12.4 MiB encoded input occupied approximately 2.7 MiB after block
+compression. These numbers are workload- and host-specific, not release claims.
+They show that for tiny structured records the bottleneck is PyTorch's
+per-sample Python IPC and default dictionary collation—not ShardPack I/O or Fory.
+Use `num_workers=0` for cheap metadata-only decode. Multiple workers become useful
+when image/audio transforms are expensive enough to amortize IPC. The dedicated
+Rust dataloader should eventually batch before crossing into Python.
 
 ## Zstd implementation
 

@@ -27,3 +27,8 @@ run = "uv run maturin build --release --zig --compatibility manylinux_2_17 --out
 description = "Run real multi-process PyTorch and Fory end-to-end tests"
 depends = ["build:python"]
 run = "./scripts/test-python-torch.sh"
+
+[tasks."bench:python-fory"]
+description = "Benchmark Fory, ShardPack, and a real PyTorch DataLoader"
+depends = ["build:python"]
+run = "SHARDPACK_RUN_FORY_BENCH=1 ./scripts/test-python-torch.sh"
