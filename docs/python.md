@@ -11,6 +11,14 @@ uv run maturin develop
 uv run pytest
 ```
 
+PyTorch/Fory/OpenCV are isolated in an optional uv dependency group and are not
+dependencies of the ShardPack wheel:
+
+```bash
+uv sync --group torch
+uv run pytest tests/test_pytorch_integration.py
+```
+
 Release artifacts use Zig to retain a manylinux 2.17 baseline:
 
 ```bash
@@ -127,8 +135,7 @@ def decode(record):
 
 The opt-in `mise run test:python-torch` suite covers the complete path: Fory
 structured objects → packed buffer writer → ShardPack shards → cache/prefetch →
-zero-copy memoryview/`pyfory.Buffer` → Fory decode inside real spawned PyTorch
-DataLoader workers.
+zero-copy memoryview/`pyfory.Buffer` → threaded decode → PyTorch collation.
 
 The iterator reads shards in deterministic shard order, validates the normal
 ShardPack checksums and identities, optionally decrypts records, and releases the
@@ -147,12 +154,13 @@ bound to a one-way commitment of the supplied key. Use plaintext mode only when
 the node-local disk is inside the trusted boundary.
 
 `network_prefetch_bytes` is a total byte budget shared by at most
-`network_concurrency` in-flight shards. It bounds compressed/ciphertext bytes,
-not decoded tensors. Cache population and training consume the same stream, so a
+`network_prefetch_bytes` is shared by at most `network_concurrency` in-flight
+shards. It bounds compressed/ciphertext bytes, not decoded tensors. Cache
+population and training consume the same stream, so a
 cold epoch does not wait for a complete shard download before yielding records.
-These limits apply to each `RecordLoader`; with eight DataLoader workers, the
-node-level upper bounds are eight times the configured concurrency and byte
-budget. Tune them together rather than blindly increasing `num_workers`.
+These limits apply to each `RecordLoader`. The framework-neutral source creates
+one reader per training rank, so framework worker processes do not multiply the
+network and cache budgets.
 
 Production training should integrate the Rust crates directly—especially
 `shardpack-runtime`, `shardpack-cache`, `shardpack-storage`, and
@@ -161,80 +169,6 @@ keeps all hot-path scheduling, decode, transforms, batching, cache affinity, and
 distributed assignment outside Python while leaving Python free for Lance
 filtering and offline dataset construction.
 
-## Transitional PyTorch data source
-
-Until the dedicated Rust training dataloader is ready, `shardpack.pytorch`
-provides a minimal `IterableDataset`. PyTorch remains an optional host dependency
-and is not installed by the ShardPack wheel.
-
-```python
-from io import BytesIO
-
-import torch
-from PIL import Image
-from shardpack.pytorch import ShardPackDataset
-
-
-def decode(record):
-    image = Image.open(BytesIO(record.payload)).convert("RGB")
-    return transform(image), record.flags
-
-
-source = ShardPackDataset(
-    config="~/.config/shardpack/config.toml",
-    layout="layouts/ab/cd/<layout-id>.layout.pb",
-    store="training",
-    decode=decode,
-    shard_seed=0x5A17,
-    cache_dir="/local-nvme/shardpack",
-    cache_max_bytes=2 * 1024**4,
-    cache_mode="plaintext",
-    network_concurrency=4,
-    network_prefetch_bytes=512 * 1024**2,
-    shuffle_max_records=4096,
-    shuffle_max_bytes=256 * 1024**2,
-    shuffle_seed=0x51A7,
-    encryption_key_id="kms://training/key-7",
-    encryption_key=key_bytes,
-)
-loader = torch.utils.data.DataLoader(
-    source,
-    batch_size=128,
-    num_workers=8,
-    pin_memory=True,
-    multiprocessing_context="spawn",
-)
-```
-
-The adapter detects initialized `torch.distributed` rank/world size, falling back
-to `RANK` and `WORLD_SIZE`, then combines them with DataLoader worker identity.
-The Rust reader assigns whole shards so ranks and workers are disjoint without
-sample-level range requests. Native store/runtime state is constructed inside
-each worker and never crosses `fork`.
-
-`multiprocessing_context="spawn"` is recommended. It avoids forking a process
-after PyTorch or another native library has created threads, at the cost of worker
-startup time. Consequently, `decode` must be a picklable module-level callable;
-do not use a lambda or nested function when workers use `spawn`.
-
-By default, a Rust `EpochScheduler` owned by each DataLoader worker advances on
-every new iterator. This works with `persistent_workers=True`: epoch, shard order,
-and the domain-separated pool-shuffle seed change together without mutating the
-parent dataset. `set_epoch()` remains available before workers are created or
-when they are recreated; set `auto_advance_epoch=False` for a fixed evaluation
-order. Shard-level partitioning can yield different record counts per rank, so
-DDP training must use
-a fixed step budget, coordinated truncation/padding, or join semantics to prevent
-collective mismatch. The adapter now exposes the Rust verified cache and bounded
-shard prefetch, but schema decode, transforms and PyTorch collation still run in
-DataLoader workers until the dedicated Rust loader replaces this bridge.
-
-PyTorch does not provide a bounded record-and-byte pool shuffle for an
-`IterableDataset`; `DataLoader(shuffle=True)` is not applicable to this source.
-The three `shuffle_*` arguments above shuffle encoded records before schema
-decode. Leave both limits at zero to disable pool shuffle. Shard order is
-shuffled separately by `epoch` and `shard_seed`.
-
 ## Framework-neutral threaded loader
 
 The core threaded loader has no PyTorch, NumPy, CuPy, or JAX dependency. For
@@ -242,7 +176,17 @@ native decoders and transforms that release the GIL, it provides bounded decode,
 ordered collation, and batch prefetch:
 
 ```python
-from shardpack import ThreadedLoader
+from shardpack import ShardPackSource, ThreadedLoader
+
+source = ShardPackSource(
+    config="shardpack.toml",
+    layout="layouts/<layout-id>.layout.pb",
+    rank=rank,
+    world_size=world_size,
+    cache_dir="/local-nvme/shardpack",
+    shuffle_max_records=4096,
+    shuffle_max_bytes=256 * 1024**2,
+)
 
 loader = ThreadedLoader(
     source,
@@ -272,9 +216,10 @@ The optional PyTorch adapter supplies its default collation and pin-memory
 behavior:
 
 ```python
-from shardpack.pytorch import ShardPackDataset, ThreadedDataLoader
+from shardpack import ShardPackSource
+from shardpack.pytorch import ThreadedDataLoader
 
-source = ShardPackDataset(
+source = ShardPackSource(
     config="shardpack.toml",
     layout="layouts/<layout-id>.layout.pb",
     cache_dir="/local-nvme/shardpack",
@@ -291,6 +236,20 @@ loader = ThreadedDataLoader(
     prefetch_batches=2,
     pin_memory=True,
 )
+```
+
+For asynchronous CUDA transfer, `pin_memory=True` recursively pins the final
+collated batch in the producer thread before it enters the bounded batch queue.
+This includes the last partial batch. `consumer_fn` therefore receives pinned
+tensors on the training thread and can use its CUDA stream:
+
+```python
+transfer_stream = torch.cuda.Stream()
+
+def move_to_cuda(batch):
+    assert batch.is_pinned()
+    with torch.cuda.stream(transfer_stream):
+        return batch.to("cuda", non_blocking=True)
 ```
 
 The Rust source remains the single owner of sequential I/O, cache, epoch state,

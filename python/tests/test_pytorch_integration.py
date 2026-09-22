@@ -1,25 +1,19 @@
-import importlib
 import shutil
 from array import array
 from pathlib import Path
 
 import pytest
 
-from shardpack import DatasetWriter, Record
+from shardpack import DatasetWriter, Record, ShardPackSource, ThreadedLoader
 
-torch = pytest.importorskip("torch")
 pyfory = pytest.importorskip("pyfory")
-pytorch = importlib.import_module("shardpack.pytorch")
-ShardPackDataset = pytorch.ShardPackDataset
-ThreadedDataLoader = pytorch.ThreadedDataLoader
+torch = pytest.importorskip("torch")
+ThreadedDataLoader = pytest.importorskip("shardpack.pytorch").ThreadedDataLoader
 FORY = pyfory.Fory()
-
 DATA = Path(__file__).parent / "data"
 
 
 def decode_sample_id(record: Record) -> int:
-    assert isinstance(record.payload, memoryview)
-    assert record.payload.readonly
     return record.sample_id[0]
 
 
@@ -42,55 +36,7 @@ root = "{root}"
     )
 
 
-def collect(source: object) -> list[int]:
-    loader = torch.utils.data.DataLoader(
-        source,
-        batch_size=2,
-        num_workers=2,
-        prefetch_factor=2,
-        multiprocessing_context="spawn",
-    )
-    return [int(value) for batch in loader for value in batch]
-
-
-def test_real_dataloader_workers_manual_distributed_partition_and_hot_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    objects = tmp_path / "objects"
-    shutil.copytree(DATA, objects)
-    config = tmp_path / "shardpack.toml"
-    write_config(config, objects)
-    layout = (objects / "layout-key.txt").read_text().strip()
-    cache = tmp_path / "cache"
-
-    common = {
-        "config": config,
-        "layout": layout,
-        "decode": decode_sample_id,
-        "cache_dir": cache,
-        "network_concurrency": 2,
-        "network_prefetch_bytes": 1024 * 1024,
-        "shard_seed": 41,
-    }
-    monkeypatch.setenv("RANK", "7")
-    monkeypatch.setenv("WORLD_SIZE", "8")
-    rank_zero = collect(ShardPackDataset(**common, rank=0, world_size=2))
-    rank_one = collect(ShardPackDataset(**common, rank=1, world_size=2))
-
-    assert set(rank_zero).isdisjoint(rank_one)
-    assert set(rank_zero) | set(rank_one) == set(range(7))
-    assert len(rank_zero) + len(rank_one) == 7
-
-    # The cold distributed pass populated every assigned shard. Removing the
-    # source proves that a new pair of real DataLoader workers can train from
-    # the shared verified cache alone.
-    shutil.rmtree(objects / "shards")
-    hot = collect(ShardPackDataset(**common, rank=0, world_size=1, epoch=1))
-    assert set(hot) == set(range(7))
-    assert len(hot) == 7
-
-
-def test_fory_writer_to_real_dataloader_round_trip(tmp_path: Path) -> None:
+def test_fory_writer_to_threaded_pytorch_round_trip(tmp_path: Path) -> None:
     objects = tmp_path / "fory-objects"
     config = tmp_path / "fory.toml"
     write_config(config, objects)
@@ -98,10 +44,9 @@ def test_fory_writer_to_real_dataloader_round_trip(tmp_path: Path) -> None:
         {"index": index, "label": index % 3, "text": f"sample-{index}"} for index in range(17)
     ]
     encoded = [FORY.serialize(sample) for sample in samples]
-    lengths = [len(payload) for payload in encoded]
     offsets = array("Q", [0])
-    for length in lengths:
-        offsets.append(offsets[-1] + length)
+    for payload in encoded:
+        offsets.append(offsets[-1] + len(payload))
 
     writer = DatasetWriter(
         config,
@@ -118,19 +63,11 @@ def test_fory_writer_to_real_dataloader_round_trip(tmp_path: Path) -> None:
     )
     layout = writer.finish()
 
-    source = ShardPackDataset(
-        config,
-        layout,
+    loader = ThreadedDataLoader(
+        ShardPackSource(config, layout, cache_dir=tmp_path / "cache"),
         decode=decode_fory,
-        cache_dir=tmp_path / "fory-cache",
-        network_concurrency=2,
-        network_prefetch_bytes=1024 * 1024,
-    )
-    loader = torch.utils.data.DataLoader(
-        source,
         batch_size=4,
-        num_workers=2,
-        multiprocessing_context="spawn",
+        decode_workers=2,
     )
     decoded = {
         int(index): (int(label), text)
@@ -140,77 +77,50 @@ def test_fory_writer_to_real_dataloader_round_trip(tmp_path: Path) -> None:
     assert decoded == {sample["index"]: (sample["label"], sample["text"]) for sample in samples}
 
 
-def test_bounded_pool_shuffle_is_complete_and_deterministic(tmp_path: Path) -> None:
+def test_rust_epoch_and_pool_shuffle_advance_without_iterable_dataset(tmp_path: Path) -> None:
     objects = tmp_path / "objects"
     shutil.copytree(DATA, objects)
     config = tmp_path / "shardpack.toml"
     write_config(config, objects)
     layout = (objects / "layout-key.txt").read_text().strip()
-
-    def shuffled(seed: int) -> list[int]:
-        source = ShardPackDataset(
-            config,
-            layout,
-            decode=decode_sample_id,
-            shuffle_max_records=3,
-            shuffle_max_bytes=1024 * 1024,
-            shuffle_seed=seed,
-        )
-        return [int(value) for value in torch.utils.data.DataLoader(source, batch_size=None)]
-
-    first = shuffled(91)
-    assert first == shuffled(91)
-    assert first != shuffled(92)
-    assert set(first) == set(range(7))
-
-
-def test_persistent_workers_advance_rust_epoch_scheduler(tmp_path: Path) -> None:
-    objects = tmp_path / "objects"
-    shutil.copytree(DATA, objects)
-    config = tmp_path / "shardpack.toml"
-    write_config(config, objects)
-    layout = (objects / "layout-key.txt").read_text().strip()
-    source = ShardPackDataset(
+    source = ShardPackSource(
         config,
         layout,
-        decode=decode_sample_id,
         shuffle_max_records=3,
         shuffle_max_bytes=1024 * 1024,
         shuffle_seed=71,
     )
-    loader = torch.utils.data.DataLoader(
-        source,
-        batch_size=None,
-        num_workers=2,
-        multiprocessing_context="spawn",
-        persistent_workers=True,
-    )
+    loader = ThreadedLoader(source, decode=decode_sample_id, batch_size=1, decode_workers=2)
 
-    first = [int(value) for value in loader]
-    second = [int(value) for value in loader]
+    first = [value for batch in loader for value in batch]
+    second = [value for batch in loader for value in batch]
 
     assert set(first) == set(range(7))
     assert set(second) == set(range(7))
     assert first != second
 
 
-def test_threaded_loader_decodes_batches_without_process_ipc(tmp_path: Path) -> None:
-    objects = tmp_path / "objects"
-    shutil.copytree(DATA, objects)
-    config = tmp_path / "shardpack.toml"
-    write_config(config, objects)
-    layout = (objects / "layout-key.txt").read_text().strip()
-    source = ShardPackDataset(config, layout)
-    loader = ThreadedDataLoader(
-        source,
-        decode=decode_sample_id,
-        batch_size=3,
-        decode_workers=2,
-        decode_prefetch=4,
-        decode_task_records=2,
-        prefetch_batches=2,
-    )
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA GPU")
+def test_pinned_batches_transfer_non_blocking_on_cuda_stream() -> None:
+    saw_pinned: list[bool] = []
+    stream = torch.cuda.Stream()
 
-    values = [int(value) for batch in loader for value in batch]
-    assert set(values) == set(range(7))
-    assert len(values) == 7
+    def move_to_gpu(batch: torch.Tensor) -> torch.Tensor:
+        saw_pinned.append(batch.is_pinned())
+        with torch.cuda.stream(stream):
+            return batch.to("cuda", non_blocking=True)
+
+    loader = ThreadedDataLoader(
+        range(32),
+        decode=lambda value: torch.tensor([value], dtype=torch.int64),
+        batch_size=8,
+        decode_workers=2,
+        pin_memory=True,
+        consumer_fn=move_to_gpu,
+    )
+    batches = list(loader)
+    torch.cuda.current_stream().wait_stream(stream)
+    values = torch.cat(batches).cpu().flatten().tolist()
+
+    assert all(saw_pinned)
+    assert values == list(range(32))

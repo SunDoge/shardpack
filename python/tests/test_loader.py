@@ -1,7 +1,4 @@
-import importlib
-import sys
 import threading
-import types
 from pathlib import Path
 
 import numpy as np
@@ -222,42 +219,10 @@ def test_simple_reader_partitions_shards_across_distributed_consumers(
     assert rank_zero | rank_one == all_ids
 
 
-def test_pytorch_source_partitions_dataloader_workers_without_torch_dependency(
-    dataset: shardpack.Dataset,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_framework_neutral_source_partitions_ranks(
+    dataset: shardpack.Dataset, tmp_path: Path
 ) -> None:
-    class IterableDataset:
-        @classmethod
-        def __class_getitem__(cls, _item: object) -> type["IterableDataset"]:
-            return cls
-
-    worker_state = {"id": 0}
-    worker = types.SimpleNamespace(id=0, num_workers=2)
-    torch = types.ModuleType("torch")
-    torch.__path__ = []  # type: ignore[attr-defined]
-    distributed = types.ModuleType("torch.distributed")
-    distributed.is_available = lambda: False  # type: ignore[attr-defined]
-    distributed.is_initialized = lambda: False  # type: ignore[attr-defined]
-    utils = types.ModuleType("torch.utils")
-    utils.__path__ = []  # type: ignore[attr-defined]
-    data = types.ModuleType("torch.utils.data")
-    data.IterableDataset = IterableDataset  # type: ignore[attr-defined]
-    data.default_collate = lambda samples: samples  # type: ignore[attr-defined]
-
-    def get_worker_info() -> object:
-        worker.id = worker_state["id"]
-        return worker
-
-    data.get_worker_info = get_worker_info  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    monkeypatch.setitem(sys.modules, "torch.distributed", distributed)
-    monkeypatch.setitem(sys.modules, "torch.utils", utils)
-    monkeypatch.setitem(sys.modules, "torch.utils.data", data)
-    original_pytorch = sys.modules.pop("shardpack.pytorch", None)
-    pytorch = importlib.import_module("shardpack.pytorch")
-
-    config = tmp_path / "shardpack.toml"
+    config = tmp_path / "source.toml"
     config.write_text(
         f'''\
 version = 1
@@ -268,24 +233,21 @@ type = "filesystem"
 root = "{DATA}"
 '''
     )
+    rank_zero = {
+        record.sample_id
+        for record in shardpack.ShardPackSource(
+            config, dataset.layout_key, rank=0, world_size=2, shard_seed=19
+        )
+    }
+    rank_one = {
+        record.sample_id
+        for record in shardpack.ShardPackSource(
+            config, dataset.layout_key, rank=1, world_size=2, shard_seed=19
+        )
+    }
 
-    source = pytorch.ShardPackDataset(
-        config,
-        dataset.layout_key,
-        decode=lambda record: record.sample_id,
-        shard_seed=31,
-    )
-    worker_state["id"] = 0
-    first = set(source)
-    worker_state["id"] = 1
-    second = set(source)
-
-    assert first.isdisjoint(second)
-    assert first | second == {bytes([value]) * 16 for value in range(7)}
-    if original_pytorch is None:
-        sys.modules.pop("shardpack.pytorch", None)
-    else:
-        sys.modules["shardpack.pytorch"] = original_pytorch
+    assert rank_zero.isdisjoint(rank_one)
+    assert rank_zero | rank_one == {bytes([value]) * 16 for value in range(7)}
 
 
 def test_encrypted_layout_requires_matching_external_key(

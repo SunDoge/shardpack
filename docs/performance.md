@@ -211,14 +211,15 @@ offset the cost and negligible size benefit of passing the dominant JPEG data
 through block compression. This supports `None` as the default for media-heavy
 and ordinary image-plus-metadata layouts.
 
-### COCO PyTorch reader
+### Retired PyTorch IterableDataset comparison
 
-The self-contained COCO val2017 layout was also read through the real PyTorch
-adapter. The decode function parsed the compact metadata prefix, decoded each
+Before the `IterableDataset` adapter was removed, the self-contained COCO
+val2017 layout was read through it for comparison. The decode function parsed
+the compact metadata prefix, decoded each
 JPEG with OpenCV, resized it to 224 by 224, returned a CHW CPU tensor, and used
 64-image batches. The local verified cache was hot after the first pass.
 
-| DataLoader workers | Pool shuffle | Throughput |
+| Retired DataLoader workers | Pool shuffle | Throughput |
 | ---: | ---: | ---: |
 | 0 | disabled | 225 images/s |
 | 1 | disabled | 655 images/s |
@@ -230,8 +231,8 @@ This validation layout contains one approximately 796 MiB shard. Since workers
 are assigned whole shards, only one worker can consume it; additional workers
 correctly remain idle and provide no throughput benefit. Pool shuffle reduced
 throughput by about 3% while retaining byte-bounded memory use. These results
-support starting with one DataLoader worker per training rank and increasing it
-only when the rank owns multiple shards and profiling shows GPU input stalls.
+motivated replacing framework worker processes with one `ShardPackSource` and a
+bounded decode thread pool per training rank.
 They are host-specific measurements, not release claims.
 
 A subsequent single-process threaded-loader run capped the nested OpenCV and
@@ -263,6 +264,7 @@ measured the following hot-cache ceilings:
 | Thread scheduling and cheap collation | 7.2–9.2k records/s |
 | OpenCV/libjpeg-turbo JPEG decode | about 3.3k images/s |
 | JPEG decode, resize, Tensor, collation | 3.0–3.1k images/s |
+| Final-batch pin + non-blocking H2D, RTX 5080 | 3,067 images/s |
 
 JPEG decode is therefore the primary steady-state bottleneck. Resize, Tensor
 wrapping, and collation add roughly 10–12% over decode alone. Reader and Python
@@ -272,6 +274,40 @@ workload. OpenCV reported bundled libjpeg-turbo 3.1.2; further gains require a
 different decode path, fused decode/augmentation, or GPU decode rather than a
 faster Python queue.
 
+The CUDA measurement recursively pinned each final collated CPU batch, queued at
+most two pinned batches, and copied with `non_blocking=True` on a dedicated CUDA
+stream. The comparable CPU-only threaded run reached about 3,091 images/s, so
+pinning and H2D changed end-to-end throughput by less than 1% on this host. CI
+runs the CPU path and skips the CUDA assertion when no GPU is available; the
+local GPU test verifies that `consumer_fn` receives pinned tensors before H2D.
+
+Albumentations 2.0.8 was then measured on the same 5,000-image layout. The
+light pipeline used resize to 256, random 224 crop, horizontal flip, and color
+jitter. The heavy pipeline additionally used affine warp and Gaussian blur.
+Each decode thread owned its own `Compose` instance and random state; transform
+objects are not shared between worker threads.
+
+| Pipeline | Decode threads | Throughput | Process max RSS |
+| --- | ---: | ---: | ---: |
+| Decode + resize | 4 | 2,999 images/s | 890 MiB |
+| Light augmentation | 1 | 681 images/s | 800 MiB |
+| Light augmentation | 2 | 1,241 images/s | 835 MiB |
+| Light augmentation | 4 | 1,757–1,869 images/s | 823–842 MiB |
+| Light augmentation | 8 | 3,376–3,471 images/s | 844–856 MiB |
+| Heavy augmentation | 4 | 1,432 images/s | 855 MiB |
+| Light augmentation + pinned H2D | 4 | 1,759 images/s | 1,023 MiB |
+
+Albumentations/OpenCV operations do allocate output and intermediate image
+buffers, but this run did not show an unbounded or dominant RSS increase: four
+to eight workers remained in roughly the same 0.8--0.9 GiB host-memory band as
+the no-augmentation process. GPU initialization and pinned batches raised RSS
+to about 1.0 GiB. The important bound is the number of concurrent decode tasks,
+not the total dataset size. Eight threads helped this augmentation-heavy path
+because its OpenCV operations release the GIL; it was not useful for the much
+lighter resize-only path. These are peak-process measurements and include
+PyTorch, CUDA/OpenCV libraries, the ShardPack cache queues, and final batches,
+so they do not isolate allocator-level bytes for individual transforms.
+
 Reproduce the reader measurement with:
 
 ```bash
@@ -279,8 +315,11 @@ python python/benchmarks/coco_dataloader.py \
   --config /path/to/shardpack.toml \
   --layout layouts/<layout-id>.layout.pb \
   --cache /local/nvme/shardpack-cache \
-  --workers 0 1 2 4
+  --workers 1 2 4 8
 ```
+
+Add `--augment light` or `--augment heavy`; combine `--pin-memory --device
+cuda` to include final-batch pinning and asynchronous H2D.
 
 As a text-only comparison, the analyzer was run on the official Salesforce
 WikiText-2 raw training split. Each non-empty text row became one opaque record:

@@ -22,6 +22,12 @@ dev = [
   "pytest>=8,<10",
   "ruff>=0.13,<1",
 ]
+torch = [
+  "albumentations>=2,<3",
+  "opencv-python-headless>=4.10,<5.1",
+  "pyfory>=1.7,<2",
+  "torch>=2.8",
+]
 
 [tool.maturin]
 manifest-path = "../crates/shardpack-python/Cargo.toml"

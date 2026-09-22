@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from os import PathLike
 from typing import Any
+
+from ._native import Dataset, EpochScheduler
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,89 @@ def _keep_list(samples: list[Any]) -> list[Any]:
 
 def _decode_chunk(decode: Callable[[Any], Any], records: list[Any]) -> list[Any]:
     return [decode(record) for record in records]
+
+
+class ShardPackSource:
+    """Framework-neutral, rank-partitioned stream of encoded records."""
+
+    def __init__(
+        self,
+        config: str | PathLike[str],
+        layout: str,
+        *,
+        store: str | None = None,
+        epoch: int = 0,
+        shard_seed: int = 0,
+        rank: int | None = None,
+        world_size: int | None = None,
+        cache_dir: str | PathLike[str] | None = None,
+        cache_max_bytes: int = 256 * 1024**3,
+        cache_mode: str = "ciphertext",
+        network_concurrency: int = 2,
+        network_prefetch_bytes: int = 64 * 1024**2,
+        shuffle_max_records: int = 0,
+        shuffle_max_bytes: int = 0,
+        shuffle_seed: int = 1,
+        auto_advance_epoch: bool = True,
+        encryption_key_id: str | None = None,
+        encryption_key: bytes | None = None,
+    ) -> None:
+        if (rank is None) != (world_size is None):
+            raise ValueError("rank and world_size must be provided together")
+        self.config = os.fspath(config)
+        self.layout = layout
+        self.store = store
+        self.epoch = epoch
+        self.shard_seed = shard_seed
+        self.rank = rank
+        self.world_size = world_size
+        self.cache_dir = None if cache_dir is None else os.fspath(cache_dir)
+        self.cache_max_bytes = cache_max_bytes
+        self.cache_mode = cache_mode
+        self.network_concurrency = network_concurrency
+        self.network_prefetch_bytes = network_prefetch_bytes
+        self.shuffle_max_records = shuffle_max_records
+        self.shuffle_max_bytes = shuffle_max_bytes
+        self.shuffle_seed = shuffle_seed
+        self.auto_advance_epoch = auto_advance_epoch
+        self._epoch_scheduler = EpochScheduler(epoch, shard_seed, shuffle_seed)
+        self.encryption_key_id = encryption_key_id
+        self.encryption_key = encryption_key
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+        self._epoch_scheduler.set_epoch(epoch)
+
+    def _distributed_context(self) -> tuple[int, int]:
+        if self.rank is not None:
+            assert self.world_size is not None
+            return self.rank, self.world_size
+        return int(os.environ.get("RANK", "0")), int(os.environ.get("WORLD_SIZE", "1"))
+
+    def __iter__(self) -> Iterator[Any]:
+        rank, world_size = self._distributed_context()
+        epoch, shard_seed, shuffle_seed = self._epoch_scheduler.next()
+        if not self.auto_advance_epoch:
+            self._epoch_scheduler.set_epoch(epoch)
+        dataset = Dataset(self.config, self.layout, self.store)
+        yield from dataset.records(
+            cache_dir=self.cache_dir,
+            cache_max_bytes=self.cache_max_bytes,
+            cache_mode=self.cache_mode,
+            network_concurrency=self.network_concurrency,
+            network_prefetch_bytes=self.network_prefetch_bytes,
+            shuffle_max_records=self.shuffle_max_records,
+            shuffle_max_bytes=self.shuffle_max_bytes,
+            shuffle_seed=shuffle_seed,
+            epoch=epoch,
+            shard_seed=shard_seed,
+            rank=rank,
+            world_size=world_size,
+            worker=0,
+            workers_per_rank=1,
+            encryption_key_id=self.encryption_key_id,
+            encryption_key=self.encryption_key,
+        )
 
 
 class ThreadedLoader:

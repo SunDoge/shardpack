@@ -13,8 +13,8 @@ import cv2
 import numpy as np
 import torch
 
-from shardpack import Dataset, Record
-from shardpack.pytorch import ShardPackDataset, ThreadedDataLoader
+from shardpack import Dataset, Record, ShardPackSource
+from shardpack.pytorch import ThreadedDataLoader
 
 
 def jpeg_bytes(record: Record) -> np.ndarray:
@@ -45,8 +45,8 @@ def keep_list(samples: list[Any]) -> list[Any]:
     return samples
 
 
-def source(args: argparse.Namespace) -> ShardPackDataset:
-    return ShardPackDataset(
+def source(args: argparse.Namespace) -> ShardPackSource:
+    return ShardPackSource(
         args.config,
         args.layout,
         cache_dir=args.cache,

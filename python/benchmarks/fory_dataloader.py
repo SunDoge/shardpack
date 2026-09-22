@@ -9,8 +9,7 @@ from pathlib import Path
 import pyfory
 import torch
 
-from shardpack import Dataset, DatasetWriter, Record
-from shardpack.pytorch import ShardPackDataset
+from shardpack import Dataset, DatasetWriter, Record, ShardPackSource, ThreadedLoader
 
 FORY = pyfory.Fory()
 
@@ -108,38 +107,28 @@ root = "{objects}"
         direct_seconds = time.perf_counter() - started
         print("Direct decode:    ", rate(count, direct_seconds))
 
-        source = ShardPackDataset(
+        source = ShardPackSource(
             config,
             layout,
-            decode=decode,
             cache_dir=root / "cache",
             network_concurrency=2,
             network_prefetch_bytes=128 * 1024**2,
         )
-        loader = torch.utils.data.DataLoader(
+        loader = ThreadedLoader(
             source,
+            decode=decode,
             batch_size=256,
-            num_workers=args.workers,
-            multiprocessing_context="spawn" if args.workers else None,
-            persistent_workers=args.workers > 0,
+            decode_workers=max(1, args.workers),
+            collate_fn=torch.utils.data.default_collate,
         )
         started = time.perf_counter()
         count = sum(len(batch["index"]) for batch in loader)
         dataloader_seconds = time.perf_counter() - started
         print(
-            f"DataLoader ({args.workers}w, first):",
+            f"ThreadedLoader ({args.workers}w):",
             rate(count, dataloader_seconds),
-            f"including spawn/collation ({dataloader_seconds:.3f}s)",
+            f"including collation ({dataloader_seconds:.3f}s)",
         )
-        if args.workers:
-            started = time.perf_counter()
-            count = sum(len(batch["index"]) for batch in loader)
-            steady_seconds = time.perf_counter() - started
-            print(
-                f"DataLoader ({args.workers}w, steady):",
-                rate(count, steady_seconds),
-                f"persistent workers ({steady_seconds:.3f}s)",
-            )
 
 
 if __name__ == "__main__":

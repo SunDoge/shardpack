@@ -2,31 +2,13 @@
 set -euo pipefail
 
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-TORCH_TEST_ENV=$(mktemp -d /tmp/shardpack-torch.XXXXXX)
-trap 'rm -rf -- "$TORCH_TEST_ENV"' EXIT
-
-wheels=("$PROJECT_ROOT"/python/dist/shardpack-*-cp311-abi3-manylinux_2_17_x86_64.*.whl)
-if [[ ! -f "${wheels[0]}" ]]; then
-    echo "missing cp311 manylinux 2.17 wheel; run mise run build:python first" >&2
-    exit 1
-fi
-
-uv venv --python 3.12 "$TORCH_TEST_ENV"
-uv pip install \
-    --python "$TORCH_TEST_ENV/bin/python" \
-    --index-url https://download.pytorch.org/whl/cpu \
-    torch
-uv pip install \
-    --python "$TORCH_TEST_ENV/bin/python" \
-    pytest \
-    pyfory \
-    "${wheels[0]}"
-
-cd "$PROJECT_ROOT"
-"$TORCH_TEST_ENV/bin/python" -m pytest -q python/tests/test_pytorch_integration.py
+cd "$PROJECT_ROOT/python"
+uv sync --locked --group torch
+uv run maturin develop --release
+uv run pytest -q tests/test_pytorch_integration.py
 
 if [[ "${SHARDPACK_RUN_FORY_BENCH:-0}" == "1" ]]; then
-    "$TORCH_TEST_ENV/bin/python" python/benchmarks/fory_dataloader.py \
+    uv run python benchmarks/fory_dataloader.py \
         --records "${SHARDPACK_BENCH_RECORDS:-100000}" \
         --workers "${SHARDPACK_BENCH_WORKERS:-4}"
 fi
