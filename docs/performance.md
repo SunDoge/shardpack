@@ -235,21 +235,42 @@ only when the rank owns multiple shards and profiling shows GPU input stalls.
 They are host-specific measurements, not release claims.
 
 A subsequent single-process threaded-loader run capped the nested OpenCV and
-Torch native pools at one thread and used ordered eight-record decode tasks:
+Torch native pools at one thread and used ordered eight-record decode tasks.
+The first run observed 1,406 images/s at four workers; after warming the complete
+file/page-cache path, repeated isolated runs reached approximately 3,093
+images/s:
 
 | Loader | Decode workers | Throughput |
 | --- | ---: | ---: |
 | PyTorch DataLoader process | 1 | 464 images/s |
 | ShardPack threaded | 1 | 481 images/s |
 | ShardPack threaded | 2 | 842 images/s |
-| ShardPack threaded | 4 | 1,406 images/s |
-| ShardPack threaded | 8 | 1,420 images/s |
+| ShardPack threaded | 4 | 1,406–3,093 images/s |
+| ShardPack threaded | 8 | 1,420–3,006 images/s |
 
-Four decode threads were sufficient on this host and were approximately three
-times as fast as the same-run PyTorch process loader. Eight threads added memory
-without material throughput. The batch handoff uses the standard bounded
-`queue.Queue`; at roughly 22 batches/s its synchronization is not a meaningful
-cost. Decode task/Future scheduling was reduced by processing small chunks.
+Four decode threads were sufficient on this host. Eight threads added memory
+without material steady-state throughput. The batch handoff uses the standard
+bounded `queue.Queue`; at tens of batches per second its synchronization is not
+a meaningful cost. Decode task/Future scheduling was reduced by processing
+small chunks.
+
+The stage-isolation benchmark (`python/benchmarks/coco_pipeline_profile.py`)
+measured the following hot-cache ceilings:
+
+| Stage | Throughput |
+| --- | ---: |
+| Rust record stream | 8.1–12.4k records/s |
+| Thread scheduling and cheap collation | 7.2–9.2k records/s |
+| OpenCV/libjpeg-turbo JPEG decode | about 3.3k images/s |
+| JPEG decode, resize, Tensor, collation | 3.0–3.1k images/s |
+
+JPEG decode is therefore the primary steady-state bottleneck. Resize, Tensor
+wrapping, and collation add roughly 10–12% over decode alone. Reader and Python
+scheduling ceilings remain more than twice the complete pipeline throughput, so
+optimizing the channel or ShardPack reader would not materially improve this
+workload. OpenCV reported bundled libjpeg-turbo 3.1.2; further gains require a
+different decode path, fused decode/augmentation, or GPU decode rather than a
+faster Python queue.
 
 Reproduce the reader measurement with:
 
