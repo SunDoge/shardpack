@@ -3,195 +3,20 @@
 from __future__ import annotations
 
 import os
-import queue
-import threading
-from collections import deque
 from collections.abc import Callable, Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
 from os import PathLike
 from typing import Any
 
 try:
     import torch.distributed as dist
-    from torch.utils.data import IterableDataset, get_worker_info
-    from torch.utils.data._utils.collate import default_collate
-    from torch.utils.data._utils.pin_memory import pin_memory as torch_pin_memory
+    from torch.utils.data import IterableDataset, default_collate, get_worker_info
 except ImportError as error:  # pragma: no cover - depends on the host training environment
     raise ImportError(
         "shardpack.pytorch requires PyTorch; install torch in the training environment"
     ) from error
 
 from . import Dataset, EpochScheduler, Record
-
-
-@dataclass(frozen=True)
-class _Batch:
-    value: Any
-
-
-@dataclass(frozen=True)
-class _Failure:
-    error: Exception
-
-
-class _End:
-    pass
-
-
-_END = _End()
-
-
-def _decode_chunk(decode: Callable[[Any], Any], records: list[Any]) -> list[Any]:
-    return [decode(record) for record in records]
-
-
-class ThreadedDataLoader:
-    """Single-process, bounded threaded decode and batch pipeline.
-
-    This loader is intended for native decoders and transforms that release the
-    GIL, such as OpenCV, NumPy, Fory, and many Torch operators. ShardPack reading,
-    prefetch, cache, and encoded-record shuffle remain in Rust.
-    """
-
-    def __init__(
-        self,
-        source: ShardPackDataset,
-        *,
-        decode: Callable[[Record], Any] | None = None,
-        batch_size: int = 1,
-        decode_workers: int = 4,
-        decode_prefetch: int | None = None,
-        decode_task_records: int = 16,
-        prefetch_batches: int = 2,
-        collate_fn: Callable[[list[Any]], Any] | None = None,
-        drop_last: bool = False,
-        pin_memory: bool = False,
-        pin_memory_device: str | None = None,
-    ) -> None:
-        if batch_size < 1:
-            raise ValueError("batch_size must be positive")
-        if decode_workers < 1:
-            raise ValueError("decode_workers must be positive")
-        if prefetch_batches < 1:
-            raise ValueError("prefetch_batches must be positive")
-        if decode_prefetch is None:
-            decode_prefetch = max(batch_size, decode_workers * 2)
-        if decode_prefetch < decode_workers:
-            raise ValueError("decode_prefetch must be at least decode_workers")
-        if decode_task_records < 1:
-            raise ValueError("decode_task_records must be positive")
-        if source.decode is not None and decode is not None:
-            raise ValueError("decode must be set on either the source or loader, not both")
-        self.source = source
-        self.decode = decode
-        self.batch_size = batch_size
-        self.decode_workers = decode_workers
-        self.decode_prefetch = decode_prefetch
-        self.decode_task_records = decode_task_records
-        self.prefetch_batches = prefetch_batches
-        self.collate_fn = default_collate if collate_fn is None else collate_fn
-        self.drop_last = drop_last
-        self.pin_memory = pin_memory
-        self.pin_memory_device = pin_memory_device
-
-    def __iter__(self) -> Iterator[Any]:
-        output: queue.Queue[_Batch | _Failure | _End] = queue.Queue(self.prefetch_batches)
-        stop = threading.Event()
-        producer = threading.Thread(
-            target=self._produce,
-            args=(output, stop),
-            name="shardpack-threaded-loader",
-        )
-        producer.start()
-        try:
-            while True:
-                item = output.get()
-                if isinstance(item, _Batch):
-                    yield item.value
-                elif isinstance(item, _Failure):
-                    raise item.error
-                else:
-                    return
-        finally:
-            stop.set()
-            producer.join()
-
-    def _put(
-        self,
-        output: queue.Queue[_Batch | _Failure | _End],
-        item: _Batch | _Failure | _End,
-        stop: threading.Event,
-    ) -> bool:
-        while not stop.is_set():
-            try:
-                output.put(item, timeout=0.1)
-                return True
-            except queue.Full:
-                pass
-        return False
-
-    def _finish_batch(self, samples: list[Any]) -> Any:
-        batch = self.collate_fn(samples)
-        if self.pin_memory:
-            batch = torch_pin_memory(batch, self.pin_memory_device)
-        return batch
-
-    def _produce(
-        self,
-        output: queue.Queue[_Batch | _Failure | _End],
-        stop: threading.Event,
-    ) -> None:
-        pending: deque[Future[list[Any]]] = deque()
-        pending_records = 0
-        batch: list[Any] = []
-        source = iter(self.source)
-        decode = self.decode or (lambda value: value)
-        exhausted = False
-        executor = ThreadPoolExecutor(
-            max_workers=self.decode_workers,
-            thread_name_prefix="shardpack-decode",
-        )
-        try:
-            while not stop.is_set():
-                while not exhausted and pending_records < self.decode_prefetch:
-                    records = []
-                    capacity = min(
-                        self.decode_task_records,
-                        self.decode_prefetch - pending_records,
-                    )
-                    for _ in range(capacity):
-                        try:
-                            records.append(next(source))
-                        except StopIteration:
-                            exhausted = True
-                            break
-                    if records:
-                        pending.append(executor.submit(_decode_chunk, decode, records))
-                        pending_records += len(records)
-
-                if not pending:
-                    break
-                samples = pending.popleft().result()
-                pending_records -= len(samples)
-                for sample in samples:
-                    batch.append(sample)
-                    if len(batch) == self.batch_size:
-                        if not self._put(output, _Batch(self._finish_batch(batch)), stop):
-                            return
-                        batch = []
-
-            if batch and not self.drop_last and not stop.is_set():
-                self._put(output, _Batch(self._finish_batch(batch)), stop)
-            if not stop.is_set():
-                self._put(output, _END, stop)
-        except Exception as error:  # noqa: BLE001 - forward worker failures to the consumer
-            self._put(output, _Failure(error), stop)
-        finally:
-            stop.set()
-            for future in pending:
-                future.cancel()
-            executor.shutdown(wait=True, cancel_futures=True)
+from .loader import ThreadedLoader
 
 
 class ShardPackDataset(IterableDataset[Any]):
@@ -317,3 +142,46 @@ class ShardPackDataset(IterableDataset[Any]):
         else:
             for record in records:
                 yield self.decode(record)
+
+
+class ThreadedDataLoader(ThreadedLoader):
+    """PyTorch defaults over the framework-neutral :class:`ThreadedLoader`."""
+
+    def __init__(
+        self,
+        source: ShardPackDataset,
+        *,
+        decode: Callable[[Record], Any] | None = None,
+        batch_size: int = 1,
+        decode_workers: int = 4,
+        decode_prefetch: int | None = None,
+        decode_task_records: int = 16,
+        prefetch_batches: int = 2,
+        collate_fn: Callable[[list[Any]], Any] | None = None,
+        consumer_fn: Callable[[Any], Any] | None = None,
+        drop_last: bool = False,
+        pin_memory: bool = False,
+        pin_memory_device: str | None = None,
+    ) -> None:
+        if source.decode is not None and decode is not None:
+            raise ValueError("decode must be set on either the source or loader, not both")
+
+        def consume(batch: Any) -> Any:
+            if pin_memory:
+                from torch.utils.data._utils.pin_memory import pin_memory as torch_pin_memory
+
+                batch = torch_pin_memory(batch, pin_memory_device)
+            return batch if consumer_fn is None else consumer_fn(batch)
+
+        super().__init__(
+            source,
+            decode=decode,
+            batch_size=batch_size,
+            decode_workers=decode_workers,
+            decode_prefetch=decode_prefetch,
+            decode_task_records=decode_task_records,
+            prefetch_batches=prefetch_batches,
+            collate_fn=default_collate if collate_fn is None else collate_fn,
+            consumer_fn=consume,
+            drop_last=drop_last,
+        )

@@ -1,5 +1,6 @@
 import importlib
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -9,6 +10,36 @@ import pytest
 import shardpack
 
 DATA = Path(__file__).parent / "data"
+
+
+def test_framework_neutral_threaded_loader_batches_and_consumes_on_caller_thread() -> None:
+    caller_thread = threading.get_ident()
+    decode_threads: set[int] = set()
+    consumer_threads: list[int] = []
+
+    def decode(value: int) -> int:
+        decode_threads.add(threading.get_ident())
+        return value * 2
+
+    def consume(batch: list[int]) -> tuple[int, ...]:
+        consumer_threads.append(threading.get_ident())
+        return tuple(batch)
+
+    loader = shardpack.ThreadedLoader(
+        range(7),
+        decode=decode,
+        batch_size=3,
+        decode_workers=2,
+        decode_prefetch=4,
+        decode_task_records=2,
+        prefetch_batches=1,
+        consumer_fn=consume,
+    )
+
+    assert list(loader) == [(0, 2, 4), (6, 8, 10), (12,)]
+    assert decode_threads
+    assert caller_thread not in decode_threads
+    assert consumer_threads == [caller_thread] * 3
 
 
 def test_buffer_writer_materializes_numpy_batches(tmp_path: Path) -> None:
@@ -212,6 +243,7 @@ def test_pytorch_source_partitions_dataloader_workers_without_torch_dependency(
     utils.__path__ = []  # type: ignore[attr-defined]
     data = types.ModuleType("torch.utils.data")
     data.IterableDataset = IterableDataset  # type: ignore[attr-defined]
+    data.default_collate = lambda samples: samples  # type: ignore[attr-defined]
 
     def get_worker_info() -> object:
         worker.id = worker_state["id"]
@@ -222,7 +254,7 @@ def test_pytorch_source_partitions_dataloader_workers_without_torch_dependency(
     monkeypatch.setitem(sys.modules, "torch.distributed", distributed)
     monkeypatch.setitem(sys.modules, "torch.utils", utils)
     monkeypatch.setitem(sys.modules, "torch.utils.data", data)
-    sys.modules.pop("shardpack.pytorch", None)
+    original_pytorch = sys.modules.pop("shardpack.pytorch", None)
     pytorch = importlib.import_module("shardpack.pytorch")
 
     config = tmp_path / "shardpack.toml"
@@ -250,6 +282,10 @@ root = "{DATA}"
 
     assert first.isdisjoint(second)
     assert first | second == {bytes([value]) * 16 for value in range(7)}
+    if original_pytorch is None:
+        sys.modules.pop("shardpack.pytorch", None)
+    else:
+        sys.modules["shardpack.pytorch"] = original_pytorch
 
 
 def test_encrypted_layout_requires_matching_external_key(

@@ -235,10 +235,41 @@ The three `shuffle_*` arguments above shuffle encoded records before schema
 decode. Leave both limits at zero to disable pool shuffle. Shard order is
 shuffled separately by `epoch` and `shard_seed`.
 
-## Single-process threaded loader
+## Framework-neutral threaded loader
 
-For native decoders and transforms that release the GIL, use the SDK's bounded
-thread loader instead of PyTorch worker processes:
+The core threaded loader has no PyTorch, NumPy, CuPy, or JAX dependency. For
+native decoders and transforms that release the GIL, it provides bounded decode,
+ordered collation, and batch prefetch:
+
+```python
+from shardpack import ThreadedLoader
+
+loader = ThreadedLoader(
+    source,
+    decode=decode,
+    batch_size=64,
+    decode_workers=4,
+    collate_fn=collate,
+    # Runs in the thread calling next(loader), suitable for device transfer.
+    consumer_fn=move_to_device,
+)
+```
+
+With CuPy, keep decode and collation on CPU and create GPU arrays in the consumer
+thread:
+
+```python
+loader = ThreadedLoader(
+    source,
+    decode=decode_numpy,
+    batch_size=64,
+    collate_fn=np.stack,
+    consumer_fn=cp.asarray,
+)
+```
+
+The optional PyTorch adapter supplies its default collation and pin-memory
+behavior:
 
 ```python
 from shardpack.pytorch import ShardPackDataset, ThreadedDataLoader
