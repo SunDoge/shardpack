@@ -42,6 +42,9 @@ class ShardPackDataset(IterableDataset[Any]):
         cache_mode: str = "ciphertext",
         network_concurrency: int = 2,
         network_prefetch_bytes: int = 64 * 1024**2,
+        shuffle_max_records: int = 0,
+        shuffle_max_bytes: int = 0,
+        shuffle_seed: int = 1,
         encryption_key_id: str | None = None,
         encryption_key: bytes | None = None,
     ) -> None:
@@ -61,6 +64,9 @@ class ShardPackDataset(IterableDataset[Any]):
         self.cache_mode = cache_mode
         self.network_concurrency = network_concurrency
         self.network_prefetch_bytes = network_prefetch_bytes
+        self.shuffle_max_records = shuffle_max_records
+        self.shuffle_max_bytes = shuffle_max_bytes
+        self.shuffle_seed = shuffle_seed
         self.encryption_key_id = encryption_key_id
         self.encryption_key = encryption_key
 
@@ -91,6 +97,9 @@ class ShardPackDataset(IterableDataset[Any]):
             cache_mode=self.cache_mode,
             network_concurrency=self.network_concurrency,
             network_prefetch_bytes=self.network_prefetch_bytes,
+            shuffle_max_records=self.shuffle_max_records,
+            shuffle_max_bytes=self.shuffle_max_bytes,
+            shuffle_seed=self.shuffle_seed + self.epoch,
             epoch=self.epoch,
             shard_seed=self.shard_seed,
             rank=rank,

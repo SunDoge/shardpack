@@ -23,6 +23,7 @@ use shardpack_format::BlockCodec;
 use shardpack_manifest::proto;
 use shardpack_runtime::{
     DatasetReader, DistributedContext, EncodedRecord, NetworkPrefetch, RuntimeMetrics,
+    ShuffleLimits, ShufflePool,
 };
 use shardpack_storage::StoreRegistry;
 
@@ -566,7 +567,7 @@ impl PyDataset {
         &self.layout_key
     }
 
-    #[pyo3(signature = (*, cache_dir=None, cache_max_bytes=274_877_906_944, cache_mode="ciphertext", network_concurrency=2, network_prefetch_bytes=67_108_864, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None))]
+    #[pyo3(signature = (*, cache_dir=None, cache_max_bytes=274_877_906_944, cache_mode="ciphertext", network_concurrency=2, network_prefetch_bytes=67_108_864, shuffle_max_records=0, shuffle_max_bytes=0, shuffle_seed=1, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None))]
     #[allow(clippy::too_many_arguments)]
     fn records(
         &self,
@@ -575,6 +576,9 @@ impl PyDataset {
         cache_mode: &str,
         network_concurrency: usize,
         network_prefetch_bytes: usize,
+        shuffle_max_records: usize,
+        shuffle_max_bytes: usize,
+        shuffle_seed: u64,
         epoch: u64,
         shard_seed: u64,
         rank: usize,
@@ -584,6 +588,11 @@ impl PyDataset {
         encryption_key_id: Option<String>,
         encryption_key: Option<&Bound<'_, PyBytes>>,
     ) -> PyResult<PyRecordLoader> {
+        if (shuffle_max_records == 0) != (shuffle_max_bytes == 0) {
+            return Err(PyValueError::new_err(
+                "shuffle_max_records and shuffle_max_bytes must both be zero or both be non-zero",
+            ));
+        }
         let encryption = parse_encryption(encryption_key_id, encryption_key)?;
         let plaintext_cache = match cache_mode {
             "ciphertext" => false,
@@ -657,6 +666,16 @@ impl PyDataset {
         Ok(PyRecordLoader {
             runtime,
             reader,
+            shuffle: (shuffle_max_records != 0).then(|| {
+                ShufflePool::new(
+                    ShuffleLimits {
+                        max_records: shuffle_max_records,
+                        max_bytes: shuffle_max_bytes,
+                    },
+                    shuffle_seed,
+                )
+            }),
+            source_exhausted: false,
             metrics,
             cache_metrics,
         })
@@ -667,6 +686,8 @@ impl PyDataset {
 struct PyRecordLoader {
     runtime: tokio::runtime::Runtime,
     reader: DatasetReader,
+    shuffle: Option<ShufflePool>,
+    source_exhausted: bool,
     metrics: RuntimeMetrics,
     cache_metrics: Option<CacheMetrics>,
 }
@@ -678,10 +699,40 @@ impl PyRecordLoader {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyRecord>> {
-        let record = py
-            .detach(|| self.runtime.block_on(self.reader.next_record()))
-            .map_err(runtime_error)?;
-        Ok(record.map(PyRecord::from_encoded))
+        if self.shuffle.is_none() {
+            let record = py
+                .detach(|| self.runtime.block_on(self.reader.next_record()))
+                .map_err(runtime_error)?;
+            return Ok(record.map(PyRecord::from_encoded));
+        }
+
+        loop {
+            if self.source_exhausted {
+                return Ok(self
+                    .shuffle
+                    .as_mut()
+                    .expect("shuffle pool exists")
+                    .drain_next()
+                    .map(PyRecord::from_encoded));
+            }
+            let record = py
+                .detach(|| self.runtime.block_on(self.reader.next_record()))
+                .map_err(runtime_error)?;
+            match record {
+                Some(record) => {
+                    if let Some(emitted) = self
+                        .shuffle
+                        .as_mut()
+                        .expect("shuffle pool exists")
+                        .push(record)
+                        .map_err(runtime_error)?
+                    {
+                        return Ok(Some(PyRecord::from_encoded(emitted)));
+                    }
+                }
+                None => self.source_exhausted = true,
+            }
+        }
     }
 
     fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {

@@ -136,3 +136,27 @@ def test_fory_writer_to_real_dataloader_round_trip(tmp_path: Path) -> None:
         for index, label, text in zip(batch["index"], batch["label"], batch["text"])
     }
     assert decoded == {sample["index"]: (sample["label"], sample["text"]) for sample in samples}
+
+
+def test_bounded_pool_shuffle_is_complete_and_deterministic(tmp_path: Path) -> None:
+    objects = tmp_path / "objects"
+    shutil.copytree(DATA, objects)
+    config = tmp_path / "shardpack.toml"
+    write_config(config, objects)
+    layout = (objects / "layout-key.txt").read_text().strip()
+
+    def shuffled(seed: int) -> list[int]:
+        source = ShardPackDataset(
+            config,
+            layout,
+            decode=decode_sample_id,
+            shuffle_max_records=3,
+            shuffle_max_bytes=1024 * 1024,
+            shuffle_seed=seed,
+        )
+        return [int(value) for value in torch.utils.data.DataLoader(source, batch_size=None)]
+
+    first = shuffled(91)
+    assert first == shuffled(91)
+    assert first != shuffled(92)
+    assert set(first) == set(range(7))

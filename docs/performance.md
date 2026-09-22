@@ -211,6 +211,39 @@ offset the cost and negligible size benefit of passing the dominant JPEG data
 through block compression. This supports `None` as the default for media-heavy
 and ordinary image-plus-metadata layouts.
 
+### COCO PyTorch reader
+
+The self-contained COCO val2017 layout was also read through the real PyTorch
+adapter. The decode function parsed the compact metadata prefix, decoded each
+JPEG with OpenCV, resized it to 224 by 224, returned a CHW CPU tensor, and used
+64-image batches. The local verified cache was hot after the first pass.
+
+| DataLoader workers | Pool shuffle | Throughput |
+| ---: | ---: | ---: |
+| 0 | disabled | 225 images/s |
+| 1 | disabled | 655 images/s |
+| 2 | disabled | 655 images/s |
+| 4 | disabled | 646 images/s |
+| 1 | 4,096 records / 256 MiB | 636 images/s |
+
+This validation layout contains one approximately 796 MiB shard. Since workers
+are assigned whole shards, only one worker can consume it; additional workers
+correctly remain idle and provide no throughput benefit. Pool shuffle reduced
+throughput by about 3% while retaining byte-bounded memory use. These results
+support starting with one DataLoader worker per training rank and increasing it
+only when the rank owns multiple shards and profiling shows GPU input stalls.
+They are host-specific measurements, not release claims.
+
+Reproduce the reader measurement with:
+
+```bash
+python python/benchmarks/coco_dataloader.py \
+  --config /path/to/shardpack.toml \
+  --layout layouts/<layout-id>.layout.pb \
+  --cache /local/nvme/shardpack-cache \
+  --workers 0 1 2 4
+```
+
 As a text-only comparison, the analyzer was run on the official Salesforce
 WikiText-2 raw training split. Each non-empty text row became one opaque record:
 

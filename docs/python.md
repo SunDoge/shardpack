@@ -191,6 +191,9 @@ source = ShardPackDataset(
     cache_mode="plaintext",
     network_concurrency=4,
     network_prefetch_bytes=512 * 1024**2,
+    shuffle_max_records=4096,
+    shuffle_max_bytes=256 * 1024**2,
+    shuffle_seed=0x51A7,
     encryption_key_id="kms://training/key-7",
     encryption_key=key_bytes,
 )
@@ -223,3 +226,9 @@ a fixed step budget, coordinated truncation/padding, or join semantics to preven
 collective mismatch. The adapter now exposes the Rust verified cache and bounded
 shard prefetch, but schema decode, transforms and PyTorch collation still run in
 DataLoader workers until the dedicated Rust loader replaces this bridge.
+
+PyTorch does not provide a bounded record-and-byte pool shuffle for an
+`IterableDataset`; `DataLoader(shuffle=True)` is not applicable to this source.
+The three `shuffle_*` arguments above shuffle encoded records before schema
+decode. Leave both limits at zero to disable pool shuffle. Shard order is
+shuffled separately by `epoch` and `shard_seed`.
