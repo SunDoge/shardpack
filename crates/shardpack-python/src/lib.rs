@@ -30,7 +30,7 @@ use shardpack_storage::StoreRegistry;
 const DEFAULT_WRITER_MAX_BATCH_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_WRITER_MAX_BATCH_RECORDS: usize = 1_000_000;
 
-#[pyclass(unsendable, module = "shardpack._native", name = "EpochScheduler")]
+#[pyclass(module = "shardpack._native", name = "EpochScheduler")]
 struct PyEpochScheduler {
     process_id: u32,
     next_epoch: u64,

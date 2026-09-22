@@ -234,3 +234,41 @@ PyTorch does not provide a bounded record-and-byte pool shuffle for an
 The three `shuffle_*` arguments above shuffle encoded records before schema
 decode. Leave both limits at zero to disable pool shuffle. Shard order is
 shuffled separately by `epoch` and `shard_seed`.
+
+## Single-process threaded loader
+
+For native decoders and transforms that release the GIL, use the SDK's bounded
+thread loader instead of PyTorch worker processes:
+
+```python
+from shardpack.pytorch import ShardPackDataset, ThreadedDataLoader
+
+source = ShardPackDataset(
+    config="shardpack.toml",
+    layout="layouts/<layout-id>.layout.pb",
+    cache_dir="/local-nvme/shardpack",
+    shuffle_max_records=4096,
+    shuffle_max_bytes=256 * 1024**2,
+)
+loader = ThreadedDataLoader(
+    source,
+    decode=decode_with_opencv,
+    batch_size=64,
+    decode_workers=4,
+    decode_task_records=8,
+    decode_prefetch=128,
+    prefetch_batches=2,
+    pin_memory=True,
+)
+```
+
+The Rust source remains the single owner of sequential I/O, cache, epoch state,
+and encoded-record shuffle. A fixed Python thread pool decodes small ordered
+chunks, the coordinator collates complete batches, and a bounded queue passes
+only batches to the training thread. There is no multiprocessing queue or
+shared-memory sample transfer.
+
+OpenCV and Torch may create native CPU pools of their own. When they run below
+this loader, cap those inner pools (for example `cv2.setNumThreads(1)` and an
+appropriate `torch.set_num_threads(...)`) to avoid multiplying native threads by
+`decode_workers`. The loader does not mutate process-global library settings.

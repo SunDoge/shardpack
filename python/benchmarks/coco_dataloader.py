@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from shardpack import Record
-from shardpack.pytorch import ShardPackDataset
+from shardpack.pytorch import ShardPackDataset, ThreadedDataLoader
 
 
 def decode_coco(record: Record) -> torch.Tensor:
@@ -58,6 +58,49 @@ def run_epoch(
     records = sum(batch.shape[0] for batch in loader)
     seconds = time.perf_counter() - started
     return {
+        "loader": "pytorch",
+        "workers": workers,
+        "shuffle_records": shuffle_records,
+        "shuffle_mib": shuffle_bytes // 1024**2,
+        "records": records,
+        "seconds": seconds,
+        "records_per_second": records / seconds,
+        "max_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+    }
+
+
+def run_threaded_epoch(
+    config: Path,
+    layout: str,
+    cache: Path,
+    workers: int,
+    shuffle_records: int,
+    shuffle_bytes: int,
+) -> dict[str, float | int | str]:
+    source = ShardPackDataset(
+        config,
+        layout,
+        cache_dir=cache,
+        network_concurrency=2,
+        network_prefetch_bytes=128 * 1024**2,
+        shuffle_max_records=shuffle_records,
+        shuffle_max_bytes=shuffle_bytes,
+        shuffle_seed=0xC0C0,
+    )
+    loader = ThreadedDataLoader(
+        source,
+        decode=decode_coco,
+        batch_size=64,
+        decode_workers=workers,
+        decode_prefetch=128,
+        decode_task_records=8,
+        prefetch_batches=2,
+    )
+    started = time.perf_counter()
+    records = sum(batch.shape[0] for batch in loader)
+    seconds = time.perf_counter() - started
+    return {
+        "loader": "threaded",
         "workers": workers,
         "shuffle_records": shuffle_records,
         "shuffle_mib": shuffle_bytes // 1024**2,
@@ -74,14 +117,34 @@ def main() -> None:
     parser.add_argument("--layout", required=True)
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--workers", type=int, nargs="+", default=[0, 1, 2, 4])
+    parser.add_argument("--thread-workers", type=int, nargs="+", default=[])
     parser.add_argument("--shuffle-records", type=int, default=0)
     parser.add_argument("--shuffle-bytes", type=int, default=0)
     args = parser.parse_args()
+
+    # Native libraries otherwise create their own large pools underneath every
+    # Python decode worker. DataLoader subprocesses apply a similar Torch limit.
+    cv2.setNumThreads(1)
+    torch.set_num_threads(1)
 
     for workers in args.workers:
         print(
             json.dumps(
                 run_epoch(
+                    args.config,
+                    args.layout,
+                    args.cache,
+                    workers,
+                    args.shuffle_records,
+                    args.shuffle_bytes,
+                )
+            ),
+            flush=True,
+        )
+    for workers in args.thread_workers:
+        print(
+            json.dumps(
+                run_threaded_epoch(
                     args.config,
                     args.layout,
                     args.cache,

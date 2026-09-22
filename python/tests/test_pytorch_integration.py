@@ -9,7 +9,9 @@ from shardpack import DatasetWriter, Record
 
 torch = pytest.importorskip("torch")
 pyfory = pytest.importorskip("pyfory")
-ShardPackDataset = importlib.import_module("shardpack.pytorch").ShardPackDataset
+pytorch = importlib.import_module("shardpack.pytorch")
+ShardPackDataset = pytorch.ShardPackDataset
+ThreadedDataLoader = pytorch.ThreadedDataLoader
 FORY = pyfory.Fory()
 
 DATA = Path(__file__).parent / "data"
@@ -190,3 +192,25 @@ def test_persistent_workers_advance_rust_epoch_scheduler(tmp_path: Path) -> None
     assert set(first) == set(range(7))
     assert set(second) == set(range(7))
     assert first != second
+
+
+def test_threaded_loader_decodes_batches_without_process_ipc(tmp_path: Path) -> None:
+    objects = tmp_path / "objects"
+    shutil.copytree(DATA, objects)
+    config = tmp_path / "shardpack.toml"
+    write_config(config, objects)
+    layout = (objects / "layout-key.txt").read_text().strip()
+    source = ShardPackDataset(config, layout)
+    loader = ThreadedDataLoader(
+        source,
+        decode=decode_sample_id,
+        batch_size=3,
+        decode_workers=2,
+        decode_prefetch=4,
+        decode_task_records=2,
+        prefetch_batches=2,
+    )
+
+    values = [int(value) for batch in loader for value in batch]
+    assert set(values) == set(range(7))
+    assert len(values) == 7

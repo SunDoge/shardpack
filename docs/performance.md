@@ -234,6 +234,23 @@ support starting with one DataLoader worker per training rank and increasing it
 only when the rank owns multiple shards and profiling shows GPU input stalls.
 They are host-specific measurements, not release claims.
 
+A subsequent single-process threaded-loader run capped the nested OpenCV and
+Torch native pools at one thread and used ordered eight-record decode tasks:
+
+| Loader | Decode workers | Throughput |
+| --- | ---: | ---: |
+| PyTorch DataLoader process | 1 | 464 images/s |
+| ShardPack threaded | 1 | 481 images/s |
+| ShardPack threaded | 2 | 842 images/s |
+| ShardPack threaded | 4 | 1,406 images/s |
+| ShardPack threaded | 8 | 1,420 images/s |
+
+Four decode threads were sufficient on this host and were approximately three
+times as fast as the same-run PyTorch process loader. Eight threads added memory
+without material throughput. The batch handoff uses the standard bounded
+`queue.Queue`; at roughly 22 batches/s its synchronization is not a meaningful
+cost. Decode task/Future scheduling was reduced by processing small chunks.
+
 Reproduce the reader measurement with:
 
 ```bash
