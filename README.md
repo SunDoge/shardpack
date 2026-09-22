@@ -1,5 +1,7 @@
 # ShardPack
 
+[![Rust CI](https://github.com/SunDoge/shardpack/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/SunDoge/shardpack/actions/workflows/rust-ci.yml)
+
 ShardPack is an S3-first, streaming-first, immutable sharded record format and
 dataset layout for large-scale machine-learning training.
 
