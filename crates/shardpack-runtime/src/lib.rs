@@ -5,15 +5,19 @@ use shardpack_manifest::ShardId;
 use snafu::Snafu;
 
 mod dataset_reader;
+#[cfg(feature = "job-pin")]
 mod job_pin;
 mod metrics;
+#[cfg(feature = "pipeline")]
 mod pipeline;
 mod prefetch;
 pub use dataset_reader::{
     DatasetReader, IncompleteLayoutPolicy, LoaderCheckpoint, ReaderPosition, RetryPolicy,
 };
+#[cfg(feature = "job-pin")]
 pub use job_pin::JobPin;
 pub use metrics::{RuntimeMetrics, RuntimeMetricsSnapshot};
+#[cfg(feature = "pipeline")]
 pub use pipeline::{
     ByteSize, PipelineCheckpoint, PipelineConfig, QuiescedPipeline, RecordDecoder, RecordTransform,
     RegistryRecordDecoder, RuntimeLimits, TrainingPipeline,
@@ -80,15 +84,19 @@ pub enum Error {
         field: &'static str,
         reason: &'static str,
     },
+    #[cfg(feature = "pipeline")]
     #[snafu(display("pipeline stage {stage} failed: {message}"))]
     PipelineStage {
         stage: &'static str,
         message: String,
     },
+    #[cfg(feature = "pipeline")]
     #[snafu(display("pipeline queue closed during {stage}"))]
     QueueClosed { stage: &'static str },
+    #[cfg(feature = "pipeline")]
     #[snafu(display("pipeline checkpoint is unavailable because the source stage terminated"))]
     CheckpointUnavailable,
+    #[cfg(feature = "job-pin")]
     #[snafu(display("training job pin operation failed: {source}"))]
     Catalog { source: shardpack_catalog::Error },
 }

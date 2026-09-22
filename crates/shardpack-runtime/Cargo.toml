@@ -5,6 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+
+[features]
+default = ["job-pin", "pipeline"]
+job-pin = ["dep:prost-types", "dep:shardpack-catalog"]
+pipeline = ["dep:shardpack-codec"]
+
 [dependencies]
 blake3.workspace = true
 async-stream.workspace = true
@@ -13,11 +19,11 @@ hex.workspace = true
 snafu.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-prost-types.workspace = true
-shardpack-catalog = { path = "../shardpack-catalog" }
+prost-types = { workspace = true, optional = true }
+shardpack-catalog = { path = "../shardpack-catalog", optional = true }
 shardpack-format = { path = "../shardpack-format" }
 shardpack-cache = { path = "../shardpack-cache" }
-shardpack-codec = { path = "../shardpack-codec" }
+shardpack-codec = { path = "../shardpack-codec", optional = true }
 shardpack-manifest = { path = "../shardpack-manifest" }
 shardpack-storage = { path = "../shardpack-storage" }
 [lints]

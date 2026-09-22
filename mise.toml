@@ -7,6 +7,15 @@ zig = "0.15.2"
 description = "Build the Linux CLI for glibc 2.17 and verify its symbol floor"
 run = "./scripts/check-glibc.sh"
 
+[tasks."test:runtime-features"]
+description = "Compile every supported shardpack-runtime feature profile"
+run = [
+  "cargo clippy -p shardpack-runtime --no-default-features -- -D warnings",
+  "cargo check -p shardpack-runtime --no-default-features --features pipeline",
+  "cargo check -p shardpack-runtime --no-default-features --features job-pin",
+  "cargo check -p shardpack-runtime --all-features",
+]
+
 [tasks."test:python"]
 description = "Build the editable Python extension and run native SDK checks"
 dir = "{{config_root}}/python"

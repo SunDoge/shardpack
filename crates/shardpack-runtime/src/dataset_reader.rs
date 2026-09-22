@@ -314,6 +314,7 @@ impl DatasetReader {
         Ok(self)
     }
 
+    #[cfg(feature = "pipeline")]
     pub(crate) fn with_cache_max_bytes(mut self, max_bytes: u64) -> Self {
         self.cache = self.cache.map(|cache| cache.with_max_bytes(max_bytes));
         self

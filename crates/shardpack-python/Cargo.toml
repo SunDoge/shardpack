@@ -19,7 +19,7 @@ shardpack-config = { path = "../shardpack-config" }
 shardpack-core = { path = "../shardpack-core" }
 shardpack-format = { path = "../shardpack-format" }
 shardpack-manifest = { path = "../shardpack-manifest" }
-shardpack-runtime = { path = "../shardpack-runtime" }
+shardpack-runtime = { path = "../shardpack-runtime", default-features = false }
 shardpack-storage = { path = "../shardpack-storage" }
 tokio.workspace = true
 

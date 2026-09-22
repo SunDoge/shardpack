@@ -82,6 +82,7 @@ impl RuntimeMetrics {
         self.0.prefetched_shards.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(feature = "pipeline")]
     pub(crate) fn queue_backpressure(&self) {
         self.0
             .queue_backpressure_events

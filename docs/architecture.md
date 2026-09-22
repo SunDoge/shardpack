@@ -31,6 +31,37 @@ cache, prefetch, shuffle, decode, transforms and batching out of Python. Storage
 Apache OpenDAL operator API for local filesystem tests and S3; backend selection
 must not change ShardPack semantics.
 
+## Rust reader integration
+
+Consumers that only stream records, such as DataPump, should disable the
+high-level runtime defaults:
+
+```toml
+[dependencies]
+shardpack-runtime = { version = "0.1", default-features = false }
+```
+
+The featureless runtime retains `DatasetReader`, distributed/node-affine shard
+assignment, cache, prefetch, metrics, checkpoints, encryption, manifests and
+object storage. The optional layers are:
+
+| Feature | Adds |
+|---|---|
+| `pipeline` | codec registry and decode/transform/batch pipeline |
+| `job-pin` | catalog-backed training-job layout pins |
+
+Both remain enabled by default for compatibility with the full runtime. They can
+also be selected independently. The Python bridge uses the featureless reader
+path because it implements only record streaming.
+
+DataPump should keep the integration in a separate
+`datapump-source-shardpack` crate rather than adding ShardPack dependencies to
+`datapump-core`. An optional `shardpack` feature on an umbrella `datapump` crate
+may re-export that integration, but the implementation and dependency boundary
+should remain a crate boundary. Augmentation crates such as
+`datapump-aug-core` and `datapump-aug-image` should depend only on DataPump's
+buffer/sample contracts, not on ShardPack.
+
 ## Dependency direction
 
 ```text
