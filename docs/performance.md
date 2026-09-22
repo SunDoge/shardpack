@@ -321,6 +321,42 @@ python python/benchmarks/coco_dataloader.py \
 Add `--augment light` or `--augment heavy`; combine `--pin-memory --device
 cuda` to include final-batch pinning and asynchronous H2D.
 
+### DALI CPU-only comparison
+
+NVIDIA DALI 2.3.0 (`nvidia-dali-cuda130`) was measured on the same host and
+COCO val2017 images with a CPU-only file reader, CPU JPEG decoder with fast
+IDCT, CPU transforms, CHW output, batch size 64, queue depth 2, one warm-up
+epoch, and three measured epochs. `DALIGenericIterator` returned CPU PyTorch
+tensors. A second run consuming native DALI `TensorListCPU` outputs produced
+the same resize-only throughput, confirming that the PyTorch adapter was not
+the bottleneck.
+
+| End-to-end pipeline | Threads | Resize only | Light augmentation | Max RSS |
+| --- | ---: | ---: | ---: | ---: |
+| DALI file reader + CPU operators | 4 | 832 images/s | 688 images/s | 1.24 GiB |
+| DALI file reader + CPU operators | 8 | 1,541 images/s | 1,231 images/s | 1.30--1.36 GiB |
+| ShardPack sequential reader + OpenCV/Albumentations | 8 | 5,338--5,401 images/s | 3,356--3,544 images/s | 0.83--0.86 GiB |
+
+This is intentionally an end-to-end storage-layout comparison. DALI's standard
+file reader opens the 5,000 individual COCO JPEG files; ShardPack reads the
+same encoded JPEG data sequentially from one immutable shard in the verified
+local cache. Turning small-file access into a sequential stream is part of the
+format's intended performance benefit, rather than benchmark noise. The table
+does not establish that OpenCV's individual operators are universally faster
+than DALI operators, nor does it apply to DALI mixed/GPU decoding. On this
+workload, however, ShardPack plus the threaded CPU pipeline clearly exceeds the
+standard DALI CPU-only end-to-end path.
+
+Install the matching official DALI wheel and reproduce it with:
+
+```bash
+uv pip install --extra-index-url https://pypi.nvidia.com nvidia-dali-cuda130
+python python/benchmarks/coco_dali_cpu.py \
+  --images /data/datasets/coco2017/val2017 \
+  --workers 4 8 \
+  --augment light
+```
+
 As a text-only comparison, the analyzer was run on the official Salesforce
 WikiText-2 raw training split. Each non-empty text row became one opaque record:
 
