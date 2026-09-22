@@ -33,6 +33,7 @@ See [architecture](docs/architecture.md), [binary format](docs/binary-format.md)
 [configuration](docs/configuration.md), [performance](docs/performance.md),
 [Cloudflare/B2 deployment](docs/cloudflare-b2.md),
 [CLI guide](docs/cli.md), [Python SDK](docs/python.md),
+[Python release](docs/python-release.md),
 [Python writer design](docs/python-writer.md), and the [MVP roadmap](docs/roadmap.md).
 
 ```bash
