@@ -23,12 +23,56 @@ use shardpack_format::BlockCodec;
 use shardpack_manifest::proto;
 use shardpack_runtime::{
     DatasetReader, DistributedContext, EncodedRecord, NetworkPrefetch, RuntimeMetrics,
-    ShuffleLimits, ShufflePool,
+    ShuffleLimits, ShufflePool, pool_shuffle_seed,
 };
 use shardpack_storage::StoreRegistry;
 
 const DEFAULT_WRITER_MAX_BATCH_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_WRITER_MAX_BATCH_RECORDS: usize = 1_000_000;
+
+#[pyclass(unsendable, module = "shardpack._native", name = "EpochScheduler")]
+struct PyEpochScheduler {
+    process_id: u32,
+    next_epoch: u64,
+    shard_seed: u64,
+    shuffle_seed: u64,
+}
+
+#[pymethods]
+impl PyEpochScheduler {
+    #[new]
+    #[pyo3(signature = (initial_epoch=0, shard_seed=0, shuffle_seed=1))]
+    fn new(initial_epoch: u64, shard_seed: u64, shuffle_seed: u64) -> Self {
+        Self {
+            process_id: std::process::id(),
+            next_epoch: initial_epoch,
+            shard_seed,
+            shuffle_seed,
+        }
+    }
+
+    fn next(&mut self) -> PyResult<(u64, u64, u64)> {
+        if self.process_id != std::process::id() {
+            return Err(PyRuntimeError::new_err(
+                "EpochScheduler cannot cross a process boundary; create it inside the worker",
+            ));
+        }
+        let epoch = self.next_epoch;
+        self.next_epoch = self
+            .next_epoch
+            .checked_add(1)
+            .ok_or_else(|| PyValueError::new_err("epoch overflow"))?;
+        Ok((
+            epoch,
+            self.shard_seed,
+            pool_shuffle_seed(self.shuffle_seed, epoch),
+        ))
+    }
+
+    fn set_epoch(&mut self, epoch: u64) {
+        self.next_epoch = epoch;
+    }
+}
 
 struct BatchSource {
     receiver: mpsc::Receiver<Vec<CoreEncodedRecord>>,
@@ -771,6 +815,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDatasetWriter>()?;
     module.add_class::<PyRecord>()?;
     module.add_class::<PyRecordLoader>()?;
+    module.add_class::<PyEpochScheduler>()?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

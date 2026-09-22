@@ -160,3 +160,33 @@ def test_bounded_pool_shuffle_is_complete_and_deterministic(tmp_path: Path) -> N
     assert first == shuffled(91)
     assert first != shuffled(92)
     assert set(first) == set(range(7))
+
+
+def test_persistent_workers_advance_rust_epoch_scheduler(tmp_path: Path) -> None:
+    objects = tmp_path / "objects"
+    shutil.copytree(DATA, objects)
+    config = tmp_path / "shardpack.toml"
+    write_config(config, objects)
+    layout = (objects / "layout-key.txt").read_text().strip()
+    source = ShardPackDataset(
+        config,
+        layout,
+        decode=decode_sample_id,
+        shuffle_max_records=3,
+        shuffle_max_bytes=1024 * 1024,
+        shuffle_seed=71,
+    )
+    loader = torch.utils.data.DataLoader(
+        source,
+        batch_size=None,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        persistent_workers=True,
+    )
+
+    first = [int(value) for value in loader]
+    second = [int(value) for value in loader]
+
+    assert set(first) == set(range(7))
+    assert set(second) == set(range(7))
+    assert first != second

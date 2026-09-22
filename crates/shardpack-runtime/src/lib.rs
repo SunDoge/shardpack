@@ -281,6 +281,17 @@ fn shuffle_key(id: &ShardId, seed: u64) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+/// Derive an epoch-specific record-pool seed without coupling it to shard order.
+#[must_use]
+pub fn pool_shuffle_seed(base_seed: u64, epoch: u64) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"shardpack-pool-shuffle-v1");
+    hasher.update(&base_seed.to_le_bytes());
+    hasher.update(&epoch.to_le_bytes());
+    let bytes = hasher.finalize();
+    u64::from_le_bytes(bytes.as_bytes()[..8].try_into().expect("fixed digest size")).max(1)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShuffleLimits {
     pub max_records: usize,
@@ -447,7 +458,7 @@ mod tests {
     use crate::{
         DistributedContext, EncodedRecord, NodeAffinity, ShuffleLimits, ShufflePool,
         affinity_assigned_shard_indices, affinity_assigned_shards, assigned_shard_indices,
-        assigned_shards,
+        assigned_shards, pool_shuffle_seed,
     };
     use bytes::Bytes;
     use shardpack_manifest::ShardId;
@@ -704,6 +715,14 @@ mod tests {
                 .unwrap();
             assert!(uneven.buffered_bytes() <= 10);
         }
+    }
+
+    #[test]
+    fn pool_shuffle_seed_is_deterministic_and_epoch_specific() {
+        assert_eq!(pool_shuffle_seed(17, 3), pool_shuffle_seed(17, 3));
+        assert_ne!(pool_shuffle_seed(17, 3), pool_shuffle_seed(17, 4));
+        assert_ne!(pool_shuffle_seed(17, 3), pool_shuffle_seed(18, 3));
+        assert_ne!(pool_shuffle_seed(0, 0), 0);
     }
 
     #[test]

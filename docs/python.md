@@ -217,11 +217,13 @@ after PyTorch or another native library has created threads, at the cost of work
 startup time. Consequently, `decode` must be a picklable module-level callable;
 do not use a lambda or nested function when workers use `spawn`.
 
-Call `source.set_epoch(epoch)` before constructing each epoch iterator to change
-the deterministic shard order. With `persistent_workers=True`, mutations in the
-parent dataset object do not propagate into existing worker copies; recreate the
-DataLoader workers or pass an explicit cross-process epoch mechanism. Shard-level
-partitioning can yield different record counts per rank, so DDP training must use
+By default, a Rust `EpochScheduler` owned by each DataLoader worker advances on
+every new iterator. This works with `persistent_workers=True`: epoch, shard order,
+and the domain-separated pool-shuffle seed change together without mutating the
+parent dataset. `set_epoch()` remains available before workers are created or
+when they are recreated; set `auto_advance_epoch=False` for a fixed evaluation
+order. Shard-level partitioning can yield different record counts per rank, so
+DDP training must use
 a fixed step budget, coordinated truncation/padding, or join semantics to prevent
 collective mismatch. The adapter now exposes the Rust verified cache and bounded
 shard prefetch, but schema decode, transforms and PyTorch collation still run in
