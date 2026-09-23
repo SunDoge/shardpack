@@ -1,0 +1,24 @@
+# Copy this file and replace bucket, endpoint, region and root for your provider.
+version = 1
+default_store = "training"
+
+[stores.training]
+type = "s3"
+bucket = "your-dataset-bucket"
+# AWS S3 can omit endpoint. For B2/MinIO/RustFS, use the provider's S3 API endpoint.
+endpoint = "https://s3.example.com"
+region = "your-region"
+# Object keys in manifests are relative to this prefix.
+root = "shardpack"
+write_chunk_bytes = 16777216
+write_concurrency = 8
+
+[stores.training.credentials]
+type = "env"
+# These are environment variable NAMES, not the credentials themselves.
+access_key_id = "SHARDPACK_S3_ACCESS_KEY_ID"
+secret_access_key = "SHARDPACK_S3_SECRET_ACCESS_KEY"
+# session_token = "SHARDPACK_S3_SESSION_TOKEN"
+
+# Additional stores may be added under [stores.NAME]. Use the same store IDs
+# referenced by your layout manifest.

@@ -4,6 +4,17 @@ ShardPack accepts typed TOML through `--config`, `SHARDPACK_CONFIG`, or
 `$XDG_CONFIG_HOME/shardpack/config.toml`. Explicit CLI storage flags remain
 available for one-off, single-store operation.
 
+Copyable example files:
+
+- [S3 upload/read configuration](../examples/config/s3.toml)
+- [Public HTTP/CDN training configuration](../examples/config/http.toml)
+
+For the S3 example, set `SHARDPACK_S3_ACCESS_KEY_ID` and
+`SHARDPACK_S3_SECRET_ACCESS_KEY` in the environment. The `credentials` fields name
+these variables; they do not contain their values. Pass the file in Python with
+`Dataset(layout_key, config_path="/path/to/s3.toml")` or
+`DatasetWriter(snapshot_id, staging, config_path="/path/to/s3.toml")`.
+
 ```toml
 version = 1
 default_store = "training"

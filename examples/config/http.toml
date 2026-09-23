@@ -1,0 +1,9 @@
+# Training-side config for the same store ID used by s3.toml during upload.
+version = 1
+default_store = "training"
+
+[stores.training]
+type = "http"
+# Map this URL to the uploaded bucket's shardpack/ prefix, including manifests.
+base_url = "https://data.example.com/shardpack"
+# HTTP is read-only. Supply the ShardPack encryption key separately to the loader.
