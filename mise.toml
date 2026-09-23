@@ -24,6 +24,7 @@ run = [
   "uv run maturin develop",
   "uv run ruff format --check .",
   "uv run ruff check .",
+  "uv run mypy --follow-imports=silent typing/native_api.py",
   "uv run pytest -q",
 ]
 

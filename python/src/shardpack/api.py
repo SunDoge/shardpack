@@ -10,6 +10,7 @@ from typing import Any
 
 from ._native import Dataset as _NativeDataset
 from ._native import DatasetWriter as _NativeDatasetWriter
+from ._native import RecordLoader
 from .config import ShardPackConfig
 
 Config = Mapping[str, Any] | ShardPackConfig
@@ -72,7 +73,7 @@ class Dataset:
     def layout_key(self) -> str:
         return self._native.layout_key
 
-    def records(self, **options: Any):
+    def records(self, **options: Any) -> RecordLoader:
         return self._native.records(**options)
 
 

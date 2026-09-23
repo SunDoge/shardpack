@@ -1,33 +1,12 @@
-from collections.abc import Iterator
 from os import PathLike
 
+from ._native import EpochScheduler as EpochScheduler
+from ._native import Record as Record
+from ._native import RecordLoader as RecordLoader
+from ._native import __version__ as __version__
 from .api import Config
 from .loader import ShardPackSource as ShardPackSource
 from .loader import ThreadedLoader as ThreadedLoader
-
-class EpochScheduler:
-    def __init__(
-        self,
-        initial_epoch: int = 0,
-        shard_seed: int = 0,
-        shuffle_seed: int = 1,
-    ) -> None: ...
-    def next(self) -> tuple[int, int, int]: ...
-    def set_epoch(self, epoch: int) -> None: ...
-
-class Record:
-    @property
-    def sample_id(self) -> bytes: ...
-    @property
-    def flags(self) -> int: ...
-    @property
-    def payload(self) -> memoryview: ...
-    def __len__(self) -> int: ...
-
-class RecordLoader(Iterator[Record]):
-    def __iter__(self) -> RecordLoader: ...
-    def __next__(self) -> Record: ...
-    def metrics(self) -> dict[str, int]: ...
 
 class Dataset:
     def __init__(
@@ -101,5 +80,3 @@ class DatasetWriter:
         flags: object | None = None,
     ) -> int: ...
     def finish(self) -> str: ...
-
-__version__: str

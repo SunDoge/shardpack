@@ -8,6 +8,12 @@ Python sources use the `python/src/shardpack` layout. The PyO3 extension remains
 in `crates/shardpack-python`; maturin installs it as `shardpack._native`. Run tests
 against the installed package after `uv sync` / `maturin develop`.
 
+The wheel includes `py.typed`, public API stubs, and `shardpack/_native.pyi` for
+direct extension imports. Native `config` parameters accept JSON strings; the
+public Python facade accepts dictionaries and Pydantic models. The native stub is
+maintained alongside PyO3 signatures; tests compare exposed signatures and mypy
+checks record, loader, and facade type inference.
+
 ```bash
 cd python
 uv sync
