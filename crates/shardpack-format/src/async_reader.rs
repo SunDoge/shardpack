@@ -9,6 +9,7 @@ use crate::{
 
 pub struct AsyncShardReader<R> {
     input: R,
+    failed: bool,
     pending: VecDeque<Record>,
     fingerprint: ContentFingerprint,
     block_count: u32,
@@ -66,6 +67,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
         };
         Ok(Self {
             input,
+            failed: false,
             pending: VecDeque::new(),
             fingerprint: ContentFingerprint::default(),
             block_count: 0,
@@ -105,6 +107,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
         });
         Self {
             input,
+            failed: false,
             pending: VecDeque::new(),
             fingerprint: ContentFingerprint::default(),
             block_count: block_index,
@@ -130,12 +133,25 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
     }
 
     pub async fn next_record(&mut self) -> Result<Option<Record>> {
+        if self.failed {
+            return Err(Error::ReaderFailed);
+        }
         if let Some(record) = self.pending.pop_front() {
             self.records_yielded += 1;
             self.current_block_record_index += 1;
             return Ok(Some(record));
         }
-        if !self.read_block().await? {
+        let fingerprint = self.fingerprint;
+        let loaded = match self.read_block().await {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                self.failed = true;
+                self.pending.clear();
+                self.fingerprint = fingerprint;
+                return Err(error);
+            }
+        };
+        if !loaded {
             return Ok(None);
         }
         let record = self.pending.pop_front();
@@ -229,21 +245,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
         if header.encryption != crate::EncryptionAlgorithm::None && self.decryption_key.is_none() {
             return Err(Error::MissingDecryptionKey);
         }
-        check_limit(
-            "record_count",
-            u64::from(header.record_count),
-            u64::from(self.limits.max_records_per_block),
-        )?;
-        check_limit(
-            "stored_body_bytes",
-            header.stored_body_bytes,
-            self.limits.max_stored_body_bytes,
-        )?;
-        check_limit(
-            "raw_payload_bytes",
-            header.raw_payload_bytes,
-            self.limits.max_raw_payload_bytes,
-        )?;
+        self.limits.validate_header(&header)?;
         let expected_directory = usize::try_from(header.record_count)
             .expect("u32 fits usize")
             .checked_mul(RECORD_ENTRY_SIZE)
@@ -353,18 +355,6 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
         }
         self.block_count += 1;
         Ok(true)
-    }
-}
-
-fn check_limit(field: &'static str, actual: u64, limit: u64) -> Result<()> {
-    if actual > limit {
-        Err(Error::ResourceLimit {
-            field,
-            actual,
-            limit,
-        })
-    } else {
-        Ok(())
     }
 }
 

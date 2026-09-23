@@ -32,8 +32,55 @@ impl Default for ReaderLimits {
     }
 }
 
+impl ReaderLimits {
+    /// Validate untrusted lengths before any block allocation or decryption.
+    pub fn validate_header(&self, header: &BlockHeader) -> Result<()> {
+        check_limit(
+            "record_count",
+            u64::from(header.record_count),
+            u64::from(self.max_records_per_block),
+        )?;
+        check_limit(
+            "stored_body_bytes",
+            header.stored_body_bytes,
+            self.max_stored_body_bytes,
+        )?;
+        check_limit(
+            "raw_payload_bytes",
+            header.raw_payload_bytes,
+            self.max_raw_payload_bytes,
+        )?;
+        let directory = u64::from(header.record_count) * RECORD_ENTRY_SIZE as u64;
+        if directory != u64::from(header.directory_bytes) {
+            return Err(Error::InvalidDirectory {
+                reason: "directory size does not match record count",
+            });
+        }
+        let tag = if header.encryption == crate::EncryptionAlgorithm::None {
+            0
+        } else {
+            encryption::AEAD_TAG_BYTES as u64
+        };
+        let minimum = directory + tag;
+        if header.stored_body_bytes < minimum {
+            return Err(Error::InvalidBlockHeader {
+                reason: "stored body is shorter than directory and authentication tag",
+            });
+        }
+        if header.codec == crate::BlockCodec::None
+            && header.stored_body_bytes.checked_sub(minimum) != Some(header.raw_payload_bytes)
+        {
+            return Err(Error::InvalidBlockHeader {
+                reason: "raw and stored sizes differ for codec none",
+            });
+        }
+        Ok(())
+    }
+}
+
 pub struct ShardReader<R> {
     input: R,
+    failed: bool,
     pending: VecDeque<Record>,
     fingerprint: ContentFingerprint,
     block_count: u32,
@@ -76,6 +123,7 @@ impl<R: Read> ShardReader<R> {
         };
         Ok(Self {
             input,
+            failed: false,
             pending: VecDeque::new(),
             fingerprint: ContentFingerprint::default(),
             block_count: 0,
@@ -97,10 +145,23 @@ impl<R: Read> ShardReader<R> {
     }
 
     pub fn next_record(&mut self) -> Result<Option<Record>> {
+        if self.failed {
+            return Err(Error::ReaderFailed);
+        }
         if let Some(record) = self.pending.pop_front() {
             return Ok(Some(record));
         }
-        if !self.read_block()? {
+        let fingerprint = self.fingerprint;
+        let loaded = match self.read_block() {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                self.failed = true;
+                self.pending.clear();
+                self.fingerprint = fingerprint;
+                return Err(error);
+            }
+        };
+        if !loaded {
             return Ok(None);
         }
         Ok(self.pending.pop_front())
@@ -147,21 +208,7 @@ impl<R: Read> ShardReader<R> {
                 reason: "block encryption differs from shard header",
             });
         }
-        check_limit(
-            "record_count",
-            u64::from(header.record_count),
-            u64::from(self.limits.max_records_per_block),
-        )?;
-        check_limit(
-            "stored_body_bytes",
-            header.stored_body_bytes,
-            self.limits.max_stored_body_bytes,
-        )?;
-        check_limit(
-            "raw_payload_bytes",
-            header.raw_payload_bytes,
-            self.limits.max_raw_payload_bytes,
-        )?;
+        self.limits.validate_header(&header)?;
         let expected_directory = usize::try_from(header.record_count)
             .expect("u32 fits usize")
             .checked_mul(RECORD_ENTRY_SIZE)

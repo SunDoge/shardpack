@@ -58,6 +58,8 @@ mod error {
         PayloadChecksumMismatch,
         #[snafu(display("truncated block"))]
         TruncatedBlock,
+        #[snafu(display("reader cannot continue after a parsing error"))]
+        ReaderFailed,
         #[snafu(display("invalid record: {reason}"))]
         InvalidRecord { reason: &'static str },
         #[snafu(display("compression error: {source}"))]

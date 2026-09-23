@@ -108,13 +108,13 @@ Cloudflare caching use a 384 MiB soft target and a 480 MiB hard ceiling; see the
 For each record:
 
 ```text
-digest = BLAKE3("shardpack-record-v1" || sample_id || payload)
+digest = BLAKE3("shardpack-record-v1" || sample_id || flags_le_u32 || payload)
 ```
 
 Two independent 256-bit modular accumulators are updated from domain-separated
 derivations of this digest. Together with the record count they form an
-order-independent multiset fingerprint. It deliberately excludes flags: rebalance
-must preserve IDs and exact payload bytes, while container metadata may evolve.
+order-independent multiset fingerprint. Rebalance must preserve IDs, record flags,
+and exact payload bytes. The formulas are specified in [binary format](binary-format.md).
 
 Fingerprints are an equivalence guard, not a proof against an adversary. A
 rebalance publish requires equal record counts and fingerprints, and every target
@@ -144,14 +144,13 @@ not require the canonical source or a record decoder.
 
 Readers checkpoint before each potentially blocking read. Retryable transport,
 truncation, and checksum failures reopen the immutable object at the containing
-block boundary and validate the complete block again. Without a cache this uses
-a Range GET. With a cache, resume consumes the cached/tee stream from byte zero
-to the boundary so a cold retry leaves behind one complete verified shard rather
-than an unusable suffix; BLAKE3 therefore still covers the entire object, including
-the discarded prefix. Already-consumed records in the block are then discarded.
-An exact-identity mismatch is retried only through that full cached path; a suffix
-Range GET cannot prove the prefix and therefore fails closed. Retry exhaustion
-fails the shard; records are never silently skipped.
+block boundary and validate the complete block again. Resume reads from byte zero
+through the cached/tee stream or remote stream, hashing the discarded prefix so
+exact-object identity can still be checked at EOF. This costs prefix bandwidth on
+an uncached restart. A suffix-only Range GET is not used: without trusted per-block
+digests it cannot establish the manifest's object identity. Already-consumed
+records in the block are discarded. Retry exhaustion fails the shard; records are
+never silently skipped.
 
 Block-boundary readers also receive an explicit expected encryption mode from
 the pinned layout/key context. They reject a block whose mode differs from the

@@ -362,6 +362,13 @@ impl LocalCache {
                 account_remote(&metrics, &mut remote_hasher, &mut remote_bytes, &raw_header);
                 let header = shardpack_format::BlockHeader::decode(&raw_header)
                     .map_err(|source| Error::Format { source })?;
+                shardpack_format::ReaderLimits::default().validate_header(&header)
+                    .map_err(|source| Error::Format { source })?;
+                let remaining = expected_ciphertext_bytes.checked_sub(remote_bytes)
+                    .ok_or(Error::IdentityMismatch { shard_id })?;
+                if header.stored_body_bytes > remaining {
+                    Err(Error::IdentityMismatch { shard_id })?;
+                }
                 header
                     .validate_encrypted_sequence(block_index, encryption_salt.as_ref())
                     .map_err(|source| Error::Format { source })?;
@@ -1088,6 +1095,49 @@ mod tests {
         assert_eq!(metrics.misses, 1);
         assert_eq!(metrics.hits, 1);
         assert_eq!(metrics.downloaded_bytes, summary.byte_size);
+    }
+
+    #[tokio::test]
+    async fn plaintext_cache_rejects_forged_lengths_before_reading_body() {
+        for declared in [u64::MAX, 1024] {
+            let remote_root = tempfile::tempdir().unwrap();
+            let cache_root = tempfile::tempdir().unwrap();
+            let store = shardpack_storage::Store::filesystem(remote_root.path()).unwrap();
+            let key = EncryptionKey::new([1; 32]);
+            let mut writer =
+                ShardWriter::new_encrypted(Vec::new(), WriterOptions::default(), key.clone())
+                    .unwrap();
+            writer.add_record([1; 16], 0, b"secret").unwrap();
+            let (mut bytes, summary) = writer.finish().unwrap();
+            let mut header =
+                shardpack_format::BlockHeader::decode(bytes[64..128].try_into().unwrap()).unwrap();
+            header.stored_body_bytes = declared;
+            // Zstd allows differing raw/stored lengths, isolating the size checks.
+            header.codec = shardpack_format::BlockCodec::Zstd;
+            bytes[64..128].copy_from_slice(&header.encode());
+            bytes.truncate(128);
+            store
+                .write_bytes_immutable("forged.spk", Bytes::from(bytes))
+                .await
+                .unwrap();
+            let id = shardpack_manifest::ShardId(summary.shard_id);
+            let cache = LocalCache::new(cache_root.path()).with_plaintext(key);
+            let mut reader = cache
+                .open(&store, "forged.spk", id, summary.byte_size)
+                .await
+                .unwrap();
+            let error = reader.read_to_end(&mut Vec::new()).await.unwrap_err();
+            if declared == u64::MAX {
+                assert!(
+                    error.to_string().contains("exceeds configured limit"),
+                    "{error}"
+                );
+            } else {
+                assert!(error.to_string().contains("identity"), "{error}");
+            }
+            assert!(!cache.path_for(id).exists());
+            assert!(!plaintext_meta_path(&cache.path_for(id)).exists());
+        }
     }
 
     #[tokio::test]

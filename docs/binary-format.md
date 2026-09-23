@@ -8,6 +8,12 @@ written and ignored when read. A reader MUST reject unknown format versions,
 invalid sizes, checksum failures, truncated blocks, and record directories whose
 payload sizes do not exactly consume the raw payload.
 
+Reserved bytes may only gain semantics that older readers can safely ignore.
+Changes to framing, decoding, or authentication require a new format version or
+an explicitly supported codec/encryption identifier. Unknown shard/block flag bits
+are rejected. Readers become terminal after a parsing error: subsequent reads fail
+and no records or fingerprint updates from the failed block are exposed.
+
 ## Shard header (64 bytes)
 
 | Offset | Size | Field |
@@ -56,6 +62,24 @@ Every encrypted block repeats the same shard salt and its nonce counter MUST equ
 its zero-based block index. Readers reject salt changes, gaps, and repeated counters.
 The master key and key-management URI are never written into a shard.
 
+The exact key and nonce derivation is:
+
+```text
+key = BLAKE3.derive_key(
+    context = "shardpack aes-256-gcm shard key v1",
+    key_material = master_key[32] || salt[16])
+nonce = zero[10] || big_endian_u16(block_index)
+AAD = exact block_header[0..56]
+```
+
+Context strings are UTF-8 without a terminating NUL. The counter stored in the
+header is little-endian; only the constructed AEAD nonce uses big-endian order.
+The manifest and expected object identity must come from a trusted source. AEAD
+authenticates blocks under the supplied key; full-object BLAKE3 checked at EOF
+binds the stream to the pinned manifest. Records may be consumed before that final
+check, so a failed identity check invalidates the read even if some records were
+already delivered. Low-level block-boundary readers alone do not prove shard identity.
+
 CRC32C is not a security primitive. For encrypted blocks, authenticity and
 confidentiality come from AES-256-GCM; any wrong key or modified authenticated
 bytes fail closed.
@@ -71,6 +95,10 @@ This is an implementation detail and does not change the v1 wire format.
 | 0 | 16 | stable SampleId |
 | 16 | 8 | raw payload size, little-endian `u64` |
 | 24 | 4 | flags, little-endian `u32` |
+
+Record flags are opaque application/schema-defined bits, unlike shard/block flags.
+All 32 bits are accepted and preserved; interpretation belongs to the record codec.
+Readers must not skip records based on unknown record flags. Entries have no padding.
 
 Payloads are concatenated in directory order. A record cannot cross a block. A
 record whose payload plus its directory entry exceeds the configured block target
@@ -93,7 +121,19 @@ For logical content equivalence, each record digest is:
 BLAKE3("shardpack-record-v1" || sample_id || flags_le_u32 || raw_record_payload)
 ```
 
-The digest contributes to two domain-separated 256-bit modular accumulators.
+The digest contributes to two domain-separated 256-bit modular accumulators:
+
+```text
+a = little_endian_integer(digest)
+b = little_endian_integer(BLAKE3("shardpack-fingerprint-b-v1" || digest))
+accumulator_a = sum(a) mod 2^256
+accumulator_b = sum(b) mod 2^256
+```
+
+Both accumulators start at zero and serialize as 32 little-endian bytes. Count is
+the number of records including duplicates; an empty fingerprint has count zero
+and two zero accumulators. Merging adds counts and accumulators (modulo applies
+only to accumulators). This is an equivalence guard, not an adversarial content proof.
 Together with record count this produces an order-independent multiset fingerprint.
 Repacking, reordering, block-boundary changes and compression changes preserve it;
 any SampleId, flag, or raw payload-byte change does not.
@@ -111,7 +151,19 @@ one million records per block. Deployments should lower these limits to match th
 datasets.
 
 The authoritative v1 uncompressed golden vector lives at
-`crates/shardpack-format/tests/data/v1_none.hex`. The parser fuzz target is
+`crates/shardpack-format/tests/data/v1_none.hex`. The encrypted vector is
+`crates/shardpack-format/tests/data/v1_aes256gcm.hex`: master key is 32 bytes of
+`0x11`, salt is 16 bytes of `0x22`, SampleId is 16 bytes of `0x33`, flags are
+`0x12345678`, payload is ASCII `alpha`, codec is None, and block index is zero.
+Its fingerprint count is 1, with accumulator bytes (hex):
+
+```text
+a = 6e33d2196d4e064ae74a3874eac66b89db705aa7d1b5eb98adf6ceba4742cc3b
+b = 750a7a2985f6565c03377876e7fab7322af662b1ff91750c3dfbf84f11ace14c
+```
+
+The fixed salt/key are test data only; production writers generate a fresh salt.
+The parser fuzz target is
 `fuzz/fuzz_targets/parse_shard.rs`, `parse_encrypted_shard.rs`, and
 `parse_manifest.rs` deliberately use bounded parser limits.
 

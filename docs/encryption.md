@@ -91,7 +91,9 @@ requires it.
 
 Encryption covers both the record directory and compressed payload. Compression
 happens before encryption. Each block is an independent AEAD/recovery unit, so
-sequential streaming and block-boundary Range GET resume remain available.
+sequential streaming and block-boundary resume remain available. Runtime resume
+rereads and hashes the prefix to preserve full-object identity verification at EOF;
+an uncached restart therefore downloads the prefix again.
 
 ## Throughput benchmark
 

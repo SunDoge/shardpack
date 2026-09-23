@@ -12,7 +12,7 @@
   and rank/worker partitioning. Membership reorder causes no movement, scale-out
   only moves shards won by the new node, and checkpoints retain the exact node set.
 - Done: streaming verified local cache and basic capacity eviction.
-- Done: block-boundary checkpoints and OpenDAL range-based resume.
+- Done: block-boundary checkpoints and resume with full-object identity verification.
 - Done: standalone import of existing shards with streaming CRC, fingerprint and
   exact-byte identity verification.
 - Done: exact-byte BLAKE3 verification on the normal uncached runtime path.
@@ -24,7 +24,7 @@
   equivalence validation and stale-source-safe preferred-layout CAS.
 - Done: idempotent retirement records and retirement-time-based GC grace protection.
 - Done: bounded exponential retry for transport/truncation/checksum failures with
-  block-boundary Range GET recovery and fail-closed exhaustion behavior.
+  block-boundary recovery with prefix rehashing and fail-closed exhaustion behavior.
 - Done: explicit shuffle/decode/transform/batch pipeline with record- and
   byte-bounded queues, worker limits, backpressure, cancellation and batch prefetch.
 - Done: typed codec registry with built-in/embedded schema validation and runtime dispatch.

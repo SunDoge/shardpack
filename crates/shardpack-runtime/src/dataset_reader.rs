@@ -726,24 +726,12 @@ impl DatasetReader {
                 reason: "invalid block offset or record count",
             });
         }
-        let (object, verify_full_identity, plaintext) = if result.cache.is_some() {
+        let (object, verify_full_identity, plaintext) = {
             let object = open_object(&result.stores, result.cache.as_ref(), meta).await?;
             let plaintext = object.plaintext;
             let mut object = Blake3Reader::new(object.reader);
             discard_exact(&mut object, checkpoint.block_start_offset).await?;
             (object, !plaintext, plaintext)
-        } else {
-            let object = result
-                .stores
-                .get(&shardpack_manifest::object_location(meta).store_id)
-                .map_err(|source| Error::Storage { source })?
-                .open_reader_from(
-                    &shardpack_manifest::object_location(meta).object_key,
-                    checkpoint.block_start_offset,
-                )
-                .await
-                .map_err(|source| Error::Storage { source })?;
-            (Blake3Reader::new(object), false, false)
         };
         let mut reader = AsyncShardReader::from_block_boundary_with_key(
             object,
@@ -1254,6 +1242,34 @@ mod tests {
             "second"
         );
         assert!(resumed.next_record().await.unwrap().is_none());
+
+        // A different valid object under the same master key must not be accepted
+        // on resume merely because its record and block counts match.
+        let mut replacement = ShardWriter::new_encrypted(
+            Vec::new(),
+            WriterOptions::default(),
+            shardpack_format::EncryptionKey::new([0x71; 32]),
+        )
+        .unwrap();
+        replacement.add_record([7; 16], 0, b"private").unwrap();
+        replacement.add_record([8; 16], 0, b"forged").unwrap();
+        tokio::fs::write(
+            root.path().join(object_uri),
+            replacement.finish().unwrap().0,
+        )
+        .await
+        .unwrap();
+        let mut substituted = DatasetReader::resume_encrypted_with_registry(
+            reader.stores.clone(),
+            (*reader.layout).clone(),
+            &checkpoint,
+            "kms://training/key-7",
+            shardpack_format::EncryptionKey::new([0x71; 32]),
+        )
+        .await
+        .unwrap();
+        assert!(substituted.next_record().await.unwrap().is_some());
+        assert!(substituted.next_record().await.is_err());
     }
 
     #[tokio::test]
@@ -1633,7 +1649,7 @@ mod tests {
         assert_eq!(remaining, vec![2, 3, 4, 5]);
         let snapshot = resumed_metrics.snapshot();
         assert_eq!(snapshot.shards_completed, 1);
-        assert_eq!(snapshot.shards_verified, 0);
+        assert_eq!(snapshot.shards_verified, 1);
 
         let mut wrong_identity_layout = layout.clone();
         wrong_identity_layout.shards[0].shard_id[0] ^= 0x80;
