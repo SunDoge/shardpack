@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "S3-first streaming format, writer, cache, and training loader for ML datasets"
 readme = "README.md"
 requires-python = ">=3.11"
+dependencies = ["pydantic>=2.10,<3"]
 license = "Apache-2.0"
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -55,4 +56,4 @@ exclude = ["**/__pycache__/**", "**/*.pyc"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"

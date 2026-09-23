@@ -1,7 +1,7 @@
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from os import PathLike
-from typing import Any
 
+from .api import Config
 from .loader import ShardPackSource as ShardPackSource
 from .loader import ThreadedLoader as ThreadedLoader
 
@@ -34,7 +34,7 @@ class Dataset:
         self,
         layout: str,
         *,
-        config: Mapping[str, Any] | None = None,
+        config: Config | None = None,
         config_path: str | PathLike[str] | None = None,
         store: str | None = None,
     ) -> None: ...
@@ -76,7 +76,7 @@ class DatasetWriter:
         snapshot_id: bytes,
         staging_dir: str | PathLike[str],
         *,
-        config: Mapping[str, Any] | None = None,
+        config: Config | None = None,
         config_path: str | PathLike[str] | None = None,
         store: str | None = None,
         target_shard_bytes: int = 1_073_741_824,

@@ -1,0 +1,360 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "CatalogConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "store": {
+          "anyOf": [
+            {
+              "pattern": "^[a-zA-Z0-9_-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Store"
+        },
+        "prefix": {
+          "default": "catalog",
+          "title": "Prefix",
+          "type": "string"
+        }
+      },
+      "title": "CatalogConfig",
+      "type": "object"
+    },
+    "DefaultChainCredentials": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "default_chain",
+          "default": "default_chain",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "title": "DefaultChainCredentials",
+      "type": "object",
+      "required": [
+        "type"
+      ]
+    },
+    "EnvCredentials": {
+      "additionalProperties": false,
+      "description": "Fields contain environment variable names, not secret values.",
+      "properties": {
+        "type": {
+          "const": "env",
+          "default": "env",
+          "title": "Type",
+          "type": "string"
+        },
+        "access_key_id": {
+          "description": "Name of the access-key environment variable",
+          "title": "Access Key Id",
+          "type": "string"
+        },
+        "secret_access_key": {
+          "description": "Name of the secret-key environment variable",
+          "title": "Secret Access Key",
+          "type": "string"
+        },
+        "session_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Token"
+        }
+      },
+      "required": [
+        "access_key_id",
+        "secret_access_key",
+        "type"
+      ],
+      "title": "EnvCredentials",
+      "type": "object"
+    },
+    "FilesystemConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "filesystem",
+          "default": "filesystem",
+          "title": "Type",
+          "type": "string"
+        },
+        "root": {
+          "format": "path",
+          "title": "Root",
+          "type": "string"
+        }
+      },
+      "required": [
+        "root",
+        "type"
+      ],
+      "title": "FilesystemConfig",
+      "type": "object"
+    },
+    "HttpConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "http",
+          "default": "http",
+          "title": "Type",
+          "type": "string"
+        },
+        "base_url": {
+          "description": "Read-only HTTP(S) base URL for object keys",
+          "title": "Base Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "base_url",
+        "type"
+      ],
+      "title": "HttpConfig",
+      "type": "object"
+    },
+    "InlineCredentials": {
+      "additionalProperties": false,
+      "description": "Serialization includes secrets for the native client; repr omits them.",
+      "properties": {
+        "type": {
+          "const": "inline",
+          "default": "inline",
+          "title": "Type",
+          "type": "string"
+        },
+        "access_key_id": {
+          "title": "Access Key Id",
+          "type": "string"
+        },
+        "secret_access_key": {
+          "title": "Secret Access Key",
+          "type": "string",
+          "writeOnly": true
+        },
+        "session_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Token",
+          "writeOnly": true
+        }
+      },
+      "required": [
+        "access_key_id",
+        "secret_access_key",
+        "type"
+      ],
+      "title": "InlineCredentials",
+      "type": "object"
+    },
+    "ProfileCredentials": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "profile",
+          "default": "profile",
+          "title": "Type",
+          "type": "string"
+        },
+        "profile": {
+          "title": "Profile",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile",
+        "type"
+      ],
+      "title": "ProfileCredentials",
+      "type": "object"
+    },
+    "S3Config": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "s3",
+          "default": "s3",
+          "title": "Type",
+          "type": "string"
+        },
+        "bucket": {
+          "description": "Bucket name, without s3://",
+          "minLength": 1,
+          "title": "Bucket",
+          "type": "string"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional object-key prefix inside the bucket",
+          "title": "Root"
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "S3 API endpoint; omit for AWS S3",
+          "title": "Endpoint"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Region"
+        },
+        "credentials": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "default_chain": "#/$defs/DefaultChainCredentials",
+                  "env": "#/$defs/EnvCredentials",
+                  "inline": "#/$defs/InlineCredentials",
+                  "profile": "#/$defs/ProfileCredentials"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/DefaultChainCredentials"
+                },
+                {
+                  "$ref": "#/$defs/ProfileCredentials"
+                },
+                {
+                  "$ref": "#/$defs/EnvCredentials"
+                },
+                {
+                  "$ref": "#/$defs/InlineCredentials"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Omit to use the default credential chain",
+          "title": "Credentials"
+        },
+        "write_chunk_bytes": {
+          "default": 16777216,
+          "minimum": 5242880,
+          "title": "Write Chunk Bytes",
+          "type": "integer"
+        },
+        "write_concurrency": {
+          "default": 8,
+          "minimum": 1,
+          "title": "Write Concurrency",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bucket",
+        "type"
+      ],
+      "title": "S3Config",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Storage configuration. A single store is selected automatically.",
+  "properties": {
+    "version": {
+      "const": 1,
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "default_store": {
+      "anyOf": [
+        {
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Default Store"
+    },
+    "stores": {
+      "minProperties": 1,
+      "patternProperties": {
+        "^[a-zA-Z0-9_-]+$": {
+          "discriminator": {
+            "mapping": {
+              "filesystem": "#/$defs/FilesystemConfig",
+              "http": "#/$defs/HttpConfig",
+              "s3": "#/$defs/S3Config"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/S3Config"
+            },
+            {
+              "$ref": "#/$defs/FilesystemConfig"
+            },
+            {
+              "$ref": "#/$defs/HttpConfig"
+            }
+          ]
+        }
+      },
+      "title": "Stores",
+      "type": "object"
+    },
+    "catalog": {
+      "$ref": "#/$defs/CatalogConfig"
+    }
+  },
+  "required": [
+    "stores"
+  ],
+  "title": "ShardPackConfig",
+  "type": "object"
+}

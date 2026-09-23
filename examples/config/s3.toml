@@ -1,6 +1,5 @@
-# Copy this file and replace bucket, endpoint, region and root for your provider.
-version = 1
-default_store = "training"
+#:schema ../../schemas/shardpack-config.schema.json
+# One store is selected automatically. Defaults handle version and upload tuning.
 
 [stores.training]
 type = "s3"
@@ -10,8 +9,6 @@ endpoint = "https://s3.example.com"
 region = "your-region"
 # Object keys in manifests are relative to this prefix.
 root = "shardpack"
-write_chunk_bytes = 16777216
-write_concurrency = 8
 
 [stores.training.credentials]
 type = "env"

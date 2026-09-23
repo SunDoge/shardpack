@@ -1,5 +1,57 @@
 # Configuration
 
+For one S3 store using the default credential chain, this is enough:
+
+```toml
+[stores.training]
+type = "s3"
+bucket = "my-dataset-bucket"
+region = "us-west-2"
+```
+
+For S3-compatible providers add `endpoint`. `version`, `default_store`, catalog
+settings and upload tuning can be omitted for a single-store configuration.
+
+## Typed Python configuration and editor schema
+
+```python
+from shardpack import Dataset
+from shardpack.config import ShardPackConfig, S3Config
+
+config = ShardPackConfig(stores={
+    "training": S3Config(bucket="my-dataset-bucket", region="us-west-2"),
+})
+dataset = Dataset("layouts/example.layout.pb", config=config)
+```
+
+`Dataset`, `DatasetWriter`, and `ShardPackSource` accept this model as well as
+ordinary dictionaries and `config_path`. Pydantic validates model construction;
+Rust still applies environment overrides and runtime validation. TOML files used
+via `config_path` are loaded by Rust, so native callers need no Python dependency.
+
+The [JSON Schema](../schemas/shardpack-config.schema.json) is generated from
+`shardpack.config` using Pydantic's
+[model_json_schema](https://docs.pydantic.dev/latest/concepts/json_schema/).
+The example TOML files have a `#:schema` annotation for schema-aware editors such
+as Taplo. If you copy an example elsewhere, update this path to the schema's
+absolute location or configure your editor's schema association. JSON Schema
+checks structure; references such as `default_store` pointing to an existing store
+are validated by Pydantic/Rust, not by the structural schema.
+
+Regenerate or check it with:
+
+```bash
+cd python
+uv run python ../scripts/generate-config-schema.py
+uv run python ../scripts/generate-config-schema.py --check
+```
+
+Inline credentials are omitted from model repr, but explicit model serialization
+contains their values so they can reach the native client. Do not log serialized
+configs. Prefer the default credential chain or environment-variable references.
+
+## Full configuration
+
 ShardPack accepts typed TOML through `--config`, `SHARDPACK_CONFIG`, or
 `$XDG_CONFIG_HOME/shardpack/config.toml`. Explicit CLI storage flags remain
 available for one-off, single-store operation.

@@ -10,8 +10,9 @@ from typing import Any
 
 from ._native import Dataset as _NativeDataset
 from ._native import DatasetWriter as _NativeDatasetWriter
+from .config import ShardPackConfig
 
-Config = Mapping[str, Any]
+Config = Mapping[str, Any] | ShardPackConfig
 
 
 def _json_default(value: object) -> str:
@@ -28,6 +29,8 @@ def _config_args(
     if (config is None) == (config_path is None):
         raise ValueError("exactly one of config or config_path is required")
     if config is not None:
+        if isinstance(config, ShardPackConfig):
+            return {"config": config.model_dump_json(exclude_none=True)}
         return {"config": json.dumps(config, default=_json_default)}
     return {"config_path": os.fspath(config_path)}
 

@@ -304,6 +304,21 @@ mod tests {
     use secrecy::ExposeSecret;
 
     #[test]
+    fn documented_examples_load_with_native_defaults() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/config");
+        for file in ["s3.toml", "http.toml"] {
+            let config = ShardPackConfig::load(&root.join(file)).unwrap();
+            assert_eq!(config.version, 1);
+            assert_eq!(config.selected_store_id(None).unwrap(), "training");
+            assert_eq!(config.catalog.prefix, "catalog");
+            if let StoreConfig::S3(s3) = &config.stores["training"] {
+                assert_eq!(s3.write_chunk_bytes, 16_777_216);
+                assert_eq!(s3.write_concurrency, 8);
+            }
+        }
+    }
+
+    #[test]
     fn loads_multiple_stores_and_redacts_inline_secrets() {
         let directory = tempfile::tempdir().unwrap();
         let config_path = directory.path().join("config.toml");

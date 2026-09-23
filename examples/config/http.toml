@@ -1,6 +1,5 @@
+#:schema ../../schemas/shardpack-config.schema.json
 # Training-side config for the same store ID used by s3.toml during upload.
-version = 1
-default_store = "training"
 
 [stores.training]
 type = "http"
