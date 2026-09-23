@@ -189,11 +189,11 @@ impl<R: Read> ShardReader<R> {
             return Err(Error::PayloadChecksumMismatch);
         }
         if header.encryption != crate::EncryptionAlgorithm::None {
-            if self
-                .derived_decryption_key
-                .as_ref()
-                .is_none_or(|(salt, _)| salt != &header.key_salt)
-            {
+            header.validate_encrypted_sequence(
+                self.block_count,
+                self.derived_decryption_key.as_ref().map(|(salt, _)| salt),
+            )?;
+            if self.derived_decryption_key.is_none() {
                 let key = self
                     .decryption_key
                     .as_ref()
@@ -230,12 +230,15 @@ impl<R: Read> ShardReader<R> {
         self.pending.reserve(entry_chunks.len());
         for entry_bytes in entry_chunks {
             let entry = RecordEntry::decode(entry_bytes)?;
-            let end =
-                offset
-                    .checked_add(entry.payload_size as usize)
-                    .ok_or(Error::InvalidDirectory {
-                        reason: "record offset overflow",
-                    })?;
+            let payload_size =
+                usize::try_from(entry.payload_size).map_err(|_| Error::InvalidDirectory {
+                    reason: "record size exceeds addressable memory",
+                })?;
+            let end = offset
+                .checked_add(payload_size)
+                .ok_or(Error::InvalidDirectory {
+                    reason: "record offset overflow",
+                })?;
             if end > payload.len() {
                 return Err(Error::InvalidDirectory {
                     reason: "record exceeds raw payload",
@@ -243,7 +246,8 @@ impl<R: Read> ShardReader<R> {
             }
             let bytes = payload.slice(offset..end);
             if self.collect_content_fingerprint {
-                self.fingerprint.insert(&entry.sample_id, &bytes);
+                self.fingerprint
+                    .insert(&entry.sample_id, entry.flags, &bytes);
             }
             self.pending.push_back(Record {
                 sample_id: entry.sample_id,
@@ -540,10 +544,44 @@ mod tests {
 
             let mut reader =
                 ShardReader::new_encrypted(Cursor::new(corrupted), key.clone()).unwrap();
-            assert!(
-                matches!(reader.next_record(), Err(Error::AuthenticationFailed)),
-                "{mutation} mutation was not rejected by AEAD"
-            );
+            let error = reader.next_record().unwrap_err();
+            if mutation == "nonce" {
+                assert!(matches!(
+                    error,
+                    Error::InvalidBlockHeader {
+                        reason: "encrypted block nonce is not its sequential block index"
+                    }
+                ));
+            } else {
+                assert!(matches!(error, Error::AuthenticationFailed));
+            }
         }
+    }
+
+    #[test]
+    fn encrypted_shard_rejects_salt_changes_between_blocks() {
+        let (mut bytes, key) = encrypted_test_shard(BlockCodec::None, 8);
+        let first_offset = SHARD_HEADER_SIZE;
+        let first_raw: [u8; BLOCK_HEADER_SIZE] = bytes
+            [first_offset..first_offset + BLOCK_HEADER_SIZE]
+            .try_into()
+            .unwrap();
+        let first = BlockHeader::decode(&first_raw).unwrap();
+        let second_offset = first_offset + BLOCK_HEADER_SIZE + first.stored_body_bytes as usize;
+        let second_end = second_offset + BLOCK_HEADER_SIZE;
+        let second_raw: [u8; BLOCK_HEADER_SIZE] =
+            bytes[second_offset..second_end].try_into().unwrap();
+        let mut second = BlockHeader::decode(&second_raw).unwrap();
+        second.key_salt[0] ^= 1;
+        bytes[second_offset..second_end].copy_from_slice(&second.encode());
+
+        let mut reader = ShardReader::new_encrypted(Cursor::new(bytes), key).unwrap();
+        assert!(reader.next_record().unwrap().is_some());
+        assert!(matches!(
+            reader.next_record(),
+            Err(Error::InvalidBlockHeader {
+                reason: "encrypted block salt differs within shard"
+            })
+        ));
     }
 }

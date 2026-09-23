@@ -7,7 +7,6 @@ const MAGIC: &[u8; 8] = b"SPKSHRD\0";
 pub struct ShardHeader {
     pub version: u16,
     pub flags: u16,
-    pub layout_fragment_version: u16,
 }
 
 impl Default for ShardHeader {
@@ -15,7 +14,6 @@ impl Default for ShardHeader {
         Self {
             version: FORMAT_VERSION,
             flags: 0,
-            layout_fragment_version: 1,
         }
     }
 }
@@ -28,7 +26,6 @@ impl ShardHeader {
         out[8..10].copy_from_slice(&self.version.to_le_bytes());
         out[10..12].copy_from_slice(&self.flags.to_le_bytes());
         out[12..16].copy_from_slice(&(SHARD_HEADER_SIZE as u32).to_le_bytes());
-        out[16..18].copy_from_slice(&self.layout_fragment_version.to_le_bytes());
         let header_checksum = crc32c(&out[..60]);
         out[60..].copy_from_slice(&header_checksum.to_le_bytes());
         out
@@ -61,13 +58,7 @@ impl ShardHeader {
                 reason: "unsupported shard flags",
             });
         }
-        Ok(Self {
-            version,
-            flags,
-            layout_fragment_version: u16::from_le_bytes(
-                bytes[16..18].try_into().expect("fixed slice"),
-            ),
-        })
+        Ok(Self { version, flags })
     }
 }
 
@@ -83,7 +74,6 @@ mod tests {
             let header = ShardHeader {
                 version: FORMAT_VERSION,
                 flags,
-                layout_fragment_version: 1,
             };
             assert_eq!(ShardHeader::decode(&header.encode()).unwrap(), header);
         }

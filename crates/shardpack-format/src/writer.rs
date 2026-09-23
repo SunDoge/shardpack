@@ -106,7 +106,6 @@ impl<W: Write> ShardWriter<W> {
             &ShardHeader {
                 version: FORMAT_VERSION,
                 flags: u16::from(encrypted),
-                ..ShardHeader::default()
             }
             .encode(),
         )?;
@@ -115,8 +114,8 @@ impl<W: Write> ShardWriter<W> {
 
     pub fn add_record(&mut self, sample_id: [u8; 16], flags: u32, payload: &[u8]) -> Result<()> {
         let payload_size =
-            u32::try_from(payload.len()).map_err(|_| crate::Error::InvalidRecord {
-                reason: "payload exceeds u32 size",
+            u64::try_from(payload.len()).map_err(|_| crate::Error::InvalidRecord {
+                reason: "payload size cannot be represented as u64",
             })?;
         let mut next_block_bytes =
             buffered_block_bytes(self.entries.len(), self.payload.len(), payload.len())?;
@@ -133,7 +132,7 @@ impl<W: Write> ShardWriter<W> {
             flags,
         });
         self.payload.extend_from_slice(payload);
-        self.fingerprint.insert(&sample_id, payload);
+        self.fingerprint.insert(&sample_id, flags, payload);
         if next_block_bytes >= self.options.target_block_bytes {
             self.flush_block()?;
         }

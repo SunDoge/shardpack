@@ -272,11 +272,11 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             return Err(Error::PayloadChecksumMismatch);
         }
         if header.encryption != crate::EncryptionAlgorithm::None {
-            if self
-                .derived_decryption_key
-                .as_ref()
-                .is_none_or(|(salt, _)| salt != &header.key_salt)
-            {
+            header.validate_encrypted_sequence(
+                self.block_count,
+                self.derived_decryption_key.as_ref().map(|(salt, _)| salt),
+            )?;
+            if self.derived_decryption_key.is_none() {
                 let key = self
                     .decryption_key
                     .as_ref()
@@ -320,12 +320,15 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
         self.pending.reserve(entries.len());
         for raw_entry in entries {
             let entry = RecordEntry::decode(raw_entry)?;
-            let end =
-                offset
-                    .checked_add(entry.payload_size as usize)
-                    .ok_or(Error::InvalidDirectory {
-                        reason: "record offset overflow",
-                    })?;
+            let payload_size =
+                usize::try_from(entry.payload_size).map_err(|_| Error::InvalidDirectory {
+                    reason: "record size exceeds addressable memory",
+                })?;
+            let end = offset
+                .checked_add(payload_size)
+                .ok_or(Error::InvalidDirectory {
+                    reason: "record offset overflow",
+                })?;
             if end > payload.len() {
                 return Err(Error::InvalidDirectory {
                     reason: "record exceeds raw payload",
@@ -333,7 +336,8 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             }
             let bytes = payload.slice(offset..end);
             if self.collect_content_fingerprint {
-                self.fingerprint.insert(&entry.sample_id, &bytes);
+                self.fingerprint
+                    .insert(&entry.sample_id, entry.flags, &bytes);
             }
             self.pending.push_back(Record {
                 sample_id: entry.sample_id,

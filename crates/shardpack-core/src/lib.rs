@@ -170,7 +170,8 @@ fn drain_fingerprint<R: Read, W: Write>(
         fn next_record(&mut self) -> Result<Option<EncodedRecord>> {
             let record = self.inner.next_record()?;
             if let Some(value) = &record {
-                self.fingerprint.insert(&value.sample_id, &value.payload);
+                self.fingerprint
+                    .insert(&value.sample_id, value.flags, &value.payload);
             }
             Ok(record)
         }

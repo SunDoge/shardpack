@@ -86,6 +86,33 @@ impl BlockHeader {
             payload_crc32c: u32::from_le_bytes(bytes[60..].try_into().expect("fixed slice")),
         })
     }
+
+    /// Validates the canonical salt and nonce sequence for an encrypted shard.
+    pub fn validate_encrypted_sequence(
+        &self,
+        block_index: u32,
+        shard_salt: Option<&[u8; 16]>,
+    ) -> Result<()> {
+        if self.encryption == EncryptionAlgorithm::None {
+            return Err(Error::InvalidBlockHeader {
+                reason: "encryption sequence validation requires an encrypted block",
+            });
+        }
+        let expected_nonce = u16::try_from(block_index).map_err(|_| Error::InvalidBlockHeader {
+            reason: "encrypted block index exceeds nonce space",
+        })?;
+        if self.nonce_counter != expected_nonce {
+            return Err(Error::InvalidBlockHeader {
+                reason: "encrypted block nonce is not its sequential block index",
+            });
+        }
+        if shard_salt.is_some_and(|salt| salt != &self.key_salt) {
+            return Err(Error::InvalidBlockHeader {
+                reason: "encrypted block salt differs within shard",
+            });
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -99,7 +126,7 @@ mod tests {
             version: 1,
             flags: 0,
             record_count: 1,
-            directory_bytes: 24,
+            directory_bytes: crate::RECORD_ENTRY_SIZE as u32,
             stored_body_bytes: 1,
             raw_payload_bytes: 1,
             codec: BlockCodec::None,

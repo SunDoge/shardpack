@@ -665,7 +665,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut source = Records(records.into_iter());
         let options = MaterializeOptions {
-            target_shard_bytes: 68,
+            target_shard_bytes: 76,
             target_block_bytes: 16,
             ..Default::default()
         };
@@ -708,7 +708,7 @@ mod tests {
         let staging = tempfile::tempdir().unwrap();
         let store = shardpack_storage::Store::filesystem(root.path()).unwrap();
         let options = MaterializeOptions {
-            target_shard_bytes: 68,
+            target_shard_bytes: 76,
             max_shard_bytes: Some(200),
             target_block_bytes: 16,
             ..Default::default()

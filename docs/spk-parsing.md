@@ -37,10 +37,9 @@ flowchart TB
         sh1["8..10<br/>version"]
         sh2["10..12<br/>flags"]
         sh3["12..16<br/>header_size = 64"]
-        sh4["16..18<br/>layout fragment version"]
-        sh5["18..60<br/>reserved = 0"]
+        sh4["16..60<br/>reserved = 0"]
         sh6["60..64<br/>CRC32C(0..60)"]
-        sh0 --> sh1 --> sh2 --> sh3 --> sh4 --> sh5 --> sh6
+        sh0 --> sh1 --> sh2 --> sh3 --> sh4 --> sh6
     end
 
     subgraph BH["BlockHeader — 64 bytes"]
@@ -84,7 +83,7 @@ flowchart TD
     decrypt["Nonce = 10 zero bytes +<br/>nonce_counter as big-endian u16<br/>AAD = header[0..56]<br/>decrypt and remove 16-byte tag"]
     plain["Plain body"]
     split["Split at directory_bytes<br/>directory | stored payload"]
-    directory["Parse record_count entries<br/>24 bytes each"]
+    directory["Parse record_count entries<br/>28 bytes each"]
     codec{"codec?"}
     none["Use stored payload directly"]
     zstd["Zstd-decompress to exactly<br/>raw_payload_bytes"]
@@ -133,10 +132,10 @@ split the plaintext at `directory_bytes`.
 
 ```mermaid
 flowchart LR
-    subgraph D["RecordDirectory — record_count × 24 bytes"]
-        e0["Entry 0<br/>sample_id[16]<br/>payload_size u32<br/>flags u32"]
-        e1["Entry 1<br/>sample_id[16]<br/>payload_size u32<br/>flags u32"]
-        en["Entry N-1<br/>sample_id[16]<br/>payload_size u32<br/>flags u32"]
+    subgraph D["RecordDirectory — record_count × 28 bytes"]
+        e0["Entry 0<br/>sample_id[16]<br/>payload_size u64<br/>flags u32"]
+        e1["Entry 1<br/>sample_id[16]<br/>payload_size u64<br/>flags u32"]
+        en["Entry N-1<br/>sample_id[16]<br/>payload_size u64<br/>flags u32"]
         e0 --> e1 --> en
     end
 
@@ -155,10 +154,15 @@ flowchart LR
 Required consistency checks:
 
 - every block's version/encryption mode agrees with the shard header;
-- `directory_bytes == record_count * 24`;
+- `directory_bytes == record_count * 28`;
 - `record_count > 0`;
 - a jumbo block has exactly one record;
 - the sum of all `payload_size` values equals `raw_payload_bytes`;
 - decompression produces exactly `raw_payload_bytes`;
 - an encrypted block has a 16-byte tag and valid authentication;
+- encrypted blocks use one shard salt and `nonce_counter == zero-based block index`;
 - after the last complete block, the next read must be a clean EOF.
+
+A clean EOF only proves that the stream ended on a block boundary. Verify the
+manifest `byte_size` and full-object `ShardId` to detect loss of complete trailing
+blocks.

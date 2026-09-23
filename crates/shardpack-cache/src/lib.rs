@@ -338,6 +338,8 @@ impl LocalCache {
             let mut plaintext_hasher = blake3::Hasher::new();
             let mut remote_bytes = 0_u64;
             let mut plaintext_bytes = 0_u64;
+            let mut block_index = 0_u32;
+            let mut encryption_salt = None;
 
             let mut shard_header = [0_u8; shardpack_format::SHARD_HEADER_SIZE];
             remote.read_exact(&mut shard_header).await
@@ -360,6 +362,12 @@ impl LocalCache {
                 account_remote(&metrics, &mut remote_hasher, &mut remote_bytes, &raw_header);
                 let header = shardpack_format::BlockHeader::decode(&raw_header)
                     .map_err(|source| Error::Format { source })?;
+                header
+                    .validate_encrypted_sequence(block_index, encryption_salt.as_ref())
+                    .map_err(|source| Error::Format { source })?;
+                encryption_salt.get_or_insert(header.key_salt);
+                block_index = block_index.checked_add(1)
+                    .ok_or(Error::InvalidPlaintextMetadata { shard_id })?;
                 let body_len = usize::try_from(header.stored_body_bytes)
                     .map_err(|_| Error::InvalidPlaintextMetadata { shard_id })?;
                 let mut body = vec![0_u8; body_len];

@@ -9,10 +9,11 @@ pub struct ContentFingerprint {
 }
 
 impl ContentFingerprint {
-    pub fn insert(&mut self, sample_id: &[u8; 16], payload: &[u8]) {
+    pub fn insert(&mut self, sample_id: &[u8; 16], flags: u32, payload: &[u8]) {
         let mut record = blake3::Hasher::new();
         record.update(RECORD_DOMAIN);
         record.update(sample_id);
+        record.update(&flags.to_le_bytes());
         record.update(payload);
         let digest = *record.finalize().as_bytes();
 
@@ -61,13 +62,22 @@ mod tests {
         let mut forward = ContentFingerprint::default();
         let mut reverse = ContentFingerprint::default();
         for (id, payload) in records {
-            forward.insert(&id, payload);
+            forward.insert(&id, 0, payload);
         }
         for (id, payload) in records.into_iter().rev() {
-            reverse.insert(&id, payload);
+            reverse.insert(&id, 0, payload);
         }
         assert_eq!(forward, reverse);
-        reverse.insert(&records[0].0, records[0].1);
+        reverse.insert(&records[0].0, 0, records[0].1);
         assert_ne!(forward, reverse);
+    }
+
+    #[test]
+    fn record_flags_are_part_of_logical_content() {
+        let mut left = ContentFingerprint::default();
+        let mut right = ContentFingerprint::default();
+        left.insert(&[1; 16], 1, b"payload");
+        right.insert(&[1; 16], 2, b"payload");
+        assert_ne!(left, right);
     }
 }

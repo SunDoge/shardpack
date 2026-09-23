@@ -554,7 +554,7 @@ mod tests {
             &store,
             staging.path(),
             &MaterializeOptions {
-                target_shard_bytes: 68,
+                target_shard_bytes: 76,
                 target_block_bytes: 10,
                 builder_version: "source".into(),
                 ..Default::default()
@@ -573,7 +573,7 @@ mod tests {
             &source_layout,
             staging.path(),
             &MaterializeOptions {
-                target_shard_bytes: 204,
+                target_shard_bytes: 228,
                 target_block_bytes: 100,
                 block_codec: BlockCodec::Zstd,
                 builder_version: "rebalance".into(),

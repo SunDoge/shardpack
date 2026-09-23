@@ -16,8 +16,7 @@ payload sizes do not exactly consume the raw payload.
 | 8 | 2 | format version (`1`) |
 | 10 | 2 | flags (bit 0 means encrypted) |
 | 12 | 4 | header size (`64`) |
-| 16 | 2 | layout fragment version |
-| 18 | 42 | reserved |
+| 16 | 44 | reserved |
 | 60 | 4 | CRC32C of bytes `[0, 60)` |
 
 The header is followed immediately by zero or more blocks. There is no footer.
@@ -35,8 +34,8 @@ The header is followed immediately by zero or more blocks. There is no footer.
 | 28 | 8 | raw payload bytes |
 | 36 | 1 | codec (`0=None`, `1=Zstd`) |
 | 37 | 1 | encryption (`0=None`, `1=AES-256-GCM`) |
-| 38 | 16 | per-shard key-derivation salt (zero for v1) |
-| 54 | 2 | per-shard block nonce counter (zero for v1) |
+| 38 | 16 | per-shard key-derivation salt (zero when unencrypted) |
+| 54 | 2 | sequential block index used as nonce counter (zero when unencrypted) |
 | 56 | 4 | CRC32C of bytes `[0, 56)` |
 | 60 | 4 | CRC32C of the complete physical block body |
 
@@ -53,6 +52,8 @@ AES-GCM authenticates block-header bytes `[0, 56)` as associated data. A fresh
 a per-shard AES key with BLAKE3's KDF mode; the 16-bit block counter constructs a
 nonce unique under that derived key. An encrypted shard is therefore limited to
 65,536 blocks (1 TiB with 16 MiB blocks), well above the recommended shard target.
+Every encrypted block repeats the same shard salt and its nonce counter MUST equal
+its zero-based block index. Readers reject salt changes, gaps, and repeated counters.
 The master key and key-management URI are never written into a shard.
 
 CRC32C is not a security primitive. For encrypted blocks, authenticity and
@@ -63,19 +64,23 @@ CRC32C uses a runtime-selected accelerated implementation: SSE4.2 on x86_64,
 the CRC extension on little-endian AArch64, and a slice-by-8 portable fallback.
 This is an implementation detail and does not change the v1 wire format.
 
-## Record directory entry (24 bytes)
+## Record directory entry (28 bytes)
 
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 16 | stable SampleId |
-| 16 | 4 | raw payload size |
-| 20 | 4 | flags |
+| 16 | 8 | raw payload size, little-endian `u64` |
+| 24 | 4 | flags, little-endian `u32` |
 
 Payloads are concatenated in directory order. A record cannot cross a block. A
 record whose payload plus its directory entry exceeds the configured block target
 is emitted as a one-record jumbo block; block target size is therefore soft. The
-writer counts both raw payload and the 24-byte entries toward the target, keeping
+writer counts both raw payload and the 28-byte entries toward the target, keeping
 memory bounded even for empty or very small records.
+
+The wire format can represent payload lengths up to `u64::MAX`. Implementations
+MUST apply explicit resource limits before converting lengths to platform-sized
+values or allocating memory.
 
 ## Identity and equivalence
 
@@ -85,13 +90,18 @@ directory, checksum and stored payload byte.
 For logical content equivalence, each record digest is:
 
 ```text
-BLAKE3("shardpack-record-v1" || sample_id || raw_record_payload)
+BLAKE3("shardpack-record-v1" || sample_id || flags_le_u32 || raw_record_payload)
 ```
 
 The digest contributes to two domain-separated 256-bit modular accumulators.
 Together with record count this produces an order-independent multiset fingerprint.
 Repacking, reordering, block-boundary changes and compression changes preserve it;
-any SampleId or raw payload-byte change does not.
+any SampleId, flag, or raw payload-byte change does not.
+
+A sequential parser cannot distinguish a complete shard from one truncated exactly
+at a block boundary. Layout consumers MUST therefore verify the manifest byte size
+and `ShardId` before treating the object as complete. Per-block checksums remain the
+fast recovery and transport-corruption checks.
 
 ## Resource safety
 

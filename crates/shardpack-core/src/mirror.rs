@@ -66,7 +66,7 @@ pub async fn mirror_dataset(
     let mut reader = ShardPackLayoutSource::new(destination.clone(), layout.clone())?;
     let mut fingerprint = ContentFingerprint::default();
     while let Some(record) = reader.next_record().await? {
-        fingerprint.insert(&record.sample_id, &record.payload);
+        fingerprint.insert(&record.sample_id, record.flags, &record.payload);
     }
     let expected = layout
         .content_fingerprint

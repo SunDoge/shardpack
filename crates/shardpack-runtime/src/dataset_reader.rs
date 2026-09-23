@@ -1518,7 +1518,7 @@ mod tests {
         let mut writer = ShardWriter::new(
             Vec::new(),
             WriterOptions {
-                target_block_bytes: 54,
+                target_block_bytes: 62,
                 codec: BlockCodec::None,
                 zstd_level: 3,
             },
@@ -1542,7 +1542,7 @@ mod tests {
             builder_version: "test".into(),
             recipe: Some(proto::LayoutRecipe {
                 target_shard_bytes: 1024,
-                target_block_bytes: 54,
+                target_block_bytes: 62,
                 block_codec: "none".into(),
                 shuffle_seed: None,
                 max_shard_bytes: None,

@@ -82,7 +82,7 @@ about runtime scheduling. The CLI composes crates; it contains no data semantics
 ## Binary format v1
 
 A shard starts with a 64-byte little-endian `ShardHeader`, followed only by blocks.
-Each block starts with a 64-byte `BlockHeader`, a sequence of 24-byte directory
+Each block starts with a 64-byte `BlockHeader`, a sequence of 28-byte directory
 entries, then one stored payload. There is no footer and writers never seek.
 
 The block checksum covers directory and stored payload bytes. Header checksums cover all header
@@ -94,7 +94,7 @@ Record payloads are opaque. Only the directory exposes stable 128-bit `SampleId`
 payload size, and flags. Block codecs in v1 are `none` and `zstd`. The zstd
 writer uses zrip's reusable transfer-oriented encoder; readers reuse zrip's
 decoder workspace and decompress directly into caller-owned output buffers.
-Block and shard soft-target accounting includes each record's 24-byte directory
+Block and shard soft-target accounting includes each record's 28-byte directory
 entry as well as its payload. Tiny or empty records therefore cannot create an
 unbounded directory or one unexpectedly enormous shard.
 
