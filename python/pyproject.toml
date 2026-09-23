@@ -49,9 +49,9 @@ torch = [
 [tool.maturin]
 manifest-path = "../crates/shardpack-python/Cargo.toml"
 module-name = "shardpack._native"
-python-source = "."
+python-source = "src"
 features = ["pyo3/extension-module"]
-exclude = ["shardpack/**/__pycache__/**", "shardpack/**/*.pyc"]
+exclude = ["**/__pycache__/**", "**/*.pyc"]
 
 [tool.ruff]
 line-length = 100

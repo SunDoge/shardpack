@@ -4,6 +4,10 @@ The Python package is the offline ingestion and upload interface for ShardPack.
 It is a mixed Python/Rust project managed by `uv` and `maturin`, and builds one
 abi3 extension for CPython 3.11 and newer.
 
+Python sources use the `python/src/shardpack` layout. The PyO3 extension remains
+in `crates/shardpack-python`; maturin installs it as `shardpack._native`. Run tests
+against the installed package after `uv sync` / `maturin develop`.
+
 ```bash
 cd python
 uv sync
