@@ -47,7 +47,7 @@ snafu = "0.8"
 tokio = { version = "1.47", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
 zeroize = "1.8"
-zrip = { git = "https://github.com/SunDoge/zrip.git", branch = "perf/decompress-into-caller-buffer", default-features = false, features = ["std", "frame", "simd"] }
+zrip = { version = "0.8.9", default-features = false, features = ["std", "frame", "simd"] }
 zstd = "0.13"
 
 [workspace.lints.clippy]

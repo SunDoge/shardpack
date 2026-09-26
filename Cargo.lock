@@ -640,9 +640,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fearless_simd"
-version = "0.7.0"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4beca3cb2444e3304ac30843cc091f44ed58932353cd492ce740067bfce6b12"
+checksum = "f3772b63c40606beea8fe1f7b06a60de27ceb9bfc2d9dad3427368ca41dc7e62"
 
 [[package]]
 name = "find-msvc-tools"
@@ -3192,8 +3192,9 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zrip"
-version = "0.8.8"
-source = "git+https://github.com/SunDoge/zrip.git?branch=perf%2Fdecompress-into-caller-buffer#bfde6ef7c5f81692a571518467e125c56e840968"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c1511b9c2e83ec95bf74c02decc73f55c9a0a5a0dfe93ad6166328fc7fe4faa"
 dependencies = [
  "zrip-core",
  "zrip-decode",
@@ -3202,13 +3203,15 @@ dependencies = [
 
 [[package]]
 name = "zrip-core"
-version = "0.10.1"
-source = "git+https://github.com/SunDoge/zrip.git?branch=perf%2Fdecompress-into-caller-buffer#bfde6ef7c5f81692a571518467e125c56e840968"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dec95be8c75252532ba0ef5e738d9da26a6f51ad52cb45f4ed90c89979727c1"
 
 [[package]]
 name = "zrip-decode"
-version = "0.8.7"
-source = "git+https://github.com/SunDoge/zrip.git?branch=perf%2Fdecompress-into-caller-buffer#bfde6ef7c5f81692a571518467e125c56e840968"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "358592ef071cd652edd56e73ef22284e2ab0b7074c0413ff5580fe06f1e28820"
 dependencies = [
  "fearless_simd",
  "zrip-core",
@@ -3216,9 +3219,11 @@ dependencies = [
 
 [[package]]
 name = "zrip-encode"
-version = "0.8.7"
-source = "git+https://github.com/SunDoge/zrip.git?branch=perf%2Fdecompress-into-caller-buffer#bfde6ef7c5f81692a571518467e125c56e840968"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b657fa83287fe6799596e53540a7b1f179ca34ffd8589d5c576a5b8a1bcc4260"
 dependencies = [
+ "fearless_simd",
  "zrip-core",
 ]
 

@@ -86,8 +86,8 @@ cargo bench -p shardpack-format --bench compression_compare
 The writer uses `zrip` with a reusable compression context and emits standard
 zstd frames. The reader uses zrip's reusable decoder workspace and decompresses
 directly into a caller-owned, exactly-sized `Vec`, which is then moved into
-`Bytes` without copying. The dependency is temporarily pinned to the
-`perf/decompress-into-caller-buffer` branch until this API is released.
+`Bytes` without copying. The caller-owned buffer API is available in the upstream
+`zrip` 0.8.9 crates.io release; no fork or Git branch dependency is required.
 
 Local measurements also showed that zrip encoding can outperform C zstd on
 incompressible input and produce smaller frames for the structured-data sample
