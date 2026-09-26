@@ -37,5 +37,9 @@ harness = false
 name = "compression_compare"
 harness = false
 
+[[bench]]
+name = "zrip_upgrade"
+harness = false
+
 [lints]
 workspace = true
