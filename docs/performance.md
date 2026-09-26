@@ -93,6 +93,10 @@ The [0.8.9 upgrade comparison](benchmarks/zrip-0.8.9.md) found modest improvemen
 with reused output buffers, but regressions on the synthetic structured encoding
 and ShardPack-read cases. It is not a blanket throughput improvement.
 
+The [0.8.10 versus 0.8.9 comparison](benchmarks/zrip-0.8.10.md) found essentially
+unchanged ShardPack read throughput (-0.8% to +1.2% median changes), unchanged
+encoded sizes, and less than 2% changes in reused-output decoding.
+
 Local measurements also showed that zrip encoding can outperform C zstd on
 incompressible input and produce smaller frames for the structured-data sample
 at level 1. The default level is 1 because ShardPack optimizes transfer
