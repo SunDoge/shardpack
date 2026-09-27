@@ -295,6 +295,9 @@ pub fn pool_shuffle_seed(base_seed: u64, epoch: u64) -> u64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShuffleLimits {
     pub max_records: usize,
+    /// Maximum retained payload bytes. Pool-owned records are compacted so a
+    /// small slice cannot pin an entire source block. Excludes record metadata,
+    /// the currently supplied record, and records held by downstream consumers.
     pub max_bytes: usize,
 }
 
@@ -374,8 +377,14 @@ impl ShufflePool {
             };
             let emitted = self.records.swap_remove(index);
             self.bytes -= emitted.payload.len();
+            // swap_remove moves the incoming record here unless it was itself
+            // emitted. Only retained records need independent, compact storage.
+            if index < self.records.len() {
+                compact_payload(&mut self.records[index]);
+            }
             Ok(Some(emitted))
         } else {
+            compact_payload(self.records.last_mut().expect("record was inserted"));
             Ok(None)
         }
     }
@@ -400,8 +409,13 @@ impl ShufflePool {
         }
     }
 
-    pub fn restore(checkpoint: ShufflePoolCheckpoint) -> Result<Self> {
+    pub fn restore(mut checkpoint: ShufflePoolCheckpoint) -> Result<Self> {
         Self::validate_checkpoint(&checkpoint)?;
+        // Public checkpoints can contain arbitrary slices of larger buffers.
+        // Apply the same ownership bound as push, without changing RNG/order.
+        for record in &mut checkpoint.records {
+            compact_payload(record);
+        }
         Ok(Self {
             limits: checkpoint.limits,
             records: checkpoint.records,
@@ -439,6 +453,14 @@ impl ShufflePool {
     pub fn buffered_records(&self) -> usize {
         self.records.len()
     }
+}
+
+fn compact_payload(record: &mut EncodedRecord) {
+    // Bytes intentionally hides its backing allocation size. Even is_unique()
+    // cannot prove a slice has no unused capacity, so copy only records that
+    // remain in the pool. Sequential readers and immediately emitted records
+    // retain their existing zero-copy behavior.
+    record.payload = Bytes::copy_from_slice(&record.payload);
 }
 
 struct XorShift64(u64);
@@ -715,6 +737,85 @@ mod tests {
                 .unwrap();
             assert!(uneven.buffered_bytes() <= 10);
         }
+    }
+
+    #[test]
+    fn shuffle_retained_slices_release_source_blocks_including_after_restore() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct Tracked {
+            bytes: Vec<u8>,
+            drops: Arc<AtomicUsize>,
+        }
+        impl AsRef<[u8]> for Tracked {
+            fn as_ref(&self) -> &[u8] {
+                &self.bytes
+            }
+        }
+        impl Drop for Tracked {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut pool = ShufflePool::new(
+            ShuffleLimits {
+                max_records: 4,
+                max_bytes: 8,
+            },
+            7,
+        );
+        let mut observed = Vec::new();
+        for n in 0..32_u8 {
+            let source = Bytes::from_owner(Tracked {
+                bytes: vec![n; 1024 * 1024],
+                drops: drops.clone(),
+            });
+            if let Some(record) = pool
+                .push(EncodedRecord {
+                    sample_id: [n; 16],
+                    flags: u32::from(n),
+                    payload: source.slice(1024..1026),
+                })
+                .unwrap()
+            {
+                assert_eq!(record.payload.as_ref(), &[record.sample_id[0]; 2]);
+                observed.push(record.sample_id[0]);
+            }
+            drop(source);
+            assert_eq!(drops.load(Ordering::Relaxed), usize::from(n) + 1);
+        }
+        while let Some(record) = pool.drain_next() {
+            assert_eq!(record.flags, u32::from(record.sample_id[0]));
+            assert_eq!(record.payload.as_ref(), &[record.sample_id[0]; 2]);
+            observed.push(record.sample_id[0]);
+        }
+        observed.sort_unstable();
+        assert_eq!(observed, (0..32).collect::<Vec<_>>());
+
+        let source = Bytes::from_owner(Tracked {
+            bytes: vec![9; 1024 * 1024],
+            drops: drops.clone(),
+        });
+        let checkpoint = super::ShufflePoolCheckpoint {
+            limits: ShuffleLimits {
+                max_records: 1,
+                max_bytes: 2,
+            },
+            records: vec![EncodedRecord {
+                sample_id: [9; 16],
+                flags: 9,
+                payload: source.slice(10..12),
+            }],
+            buffered_bytes: 2,
+            rng_state: 7,
+        };
+        drop(source);
+        let mut restored = ShufflePool::restore(checkpoint).unwrap();
+        assert_eq!(drops.load(Ordering::Relaxed), 33);
+        assert_eq!(restored.drain_next().unwrap().payload.as_ref(), &[9; 2]);
     }
 
     #[test]

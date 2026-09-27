@@ -90,6 +90,8 @@ pub struct ShardReader<R> {
     expected_encryption: Option<crate::EncryptionAlgorithm>,
     collect_content_fingerprint: bool,
     decompressor: zrip::DecompressContext,
+    stored_buffer: crate::reusable_buffer::ReusableBuffer,
+    decoded_buffer: crate::reusable_buffer::ReusableBuffer,
 }
 
 impl<R: Read> ShardReader<R> {
@@ -133,6 +135,8 @@ impl<R: Read> ShardReader<R> {
             expected_encryption: Some(expected_encryption),
             collect_content_fingerprint: true,
             decompressor: zrip::DecompressContext::new(),
+            stored_buffer: crate::reusable_buffer::ReusableBuffer::default(),
+            decoded_buffer: crate::reusable_buffer::ReusableBuffer::default(),
         })
     }
 
@@ -157,11 +161,15 @@ impl<R: Read> ShardReader<R> {
             Err(error) => {
                 self.failed = true;
                 self.pending.clear();
+                self.stored_buffer.clear();
+                self.decoded_buffer.clear();
                 self.fingerprint = fingerprint;
                 return Err(error);
             }
         };
         if !loaded {
+            self.stored_buffer.clear();
+            self.decoded_buffer.clear();
             return Ok(None);
         }
         Ok(self.pending.pop_front())
@@ -228,7 +236,8 @@ impl<R: Read> ShardReader<R> {
             usize::try_from(header.raw_payload_bytes).map_err(|_| Error::InvalidBlockHeader {
                 reason: "raw payload too large for platform",
             })?;
-        let mut body = vec![0; stored_body_size];
+        let mut body = self.stored_buffer.take(stored_body_size);
+        body.resize(stored_body_size, 0);
         self.input
             .read_exact(&mut body)
             .map_err(map_block_read_error)?;
@@ -265,12 +274,15 @@ impl<R: Read> ShardReader<R> {
                 reason: "stored body is shorter than directory",
             });
         }
-        let body = Bytes::from(body);
+        let body = self.stored_buffer.retain(body);
         let directory = body.slice(..expected_directory);
         let stored = body.slice(expected_directory..);
-        let payload = header
-            .codec
-            .decompress(stored, raw_size, &mut self.decompressor)?;
+        let payload = header.codec.decompress(
+            stored,
+            raw_size,
+            &mut self.decompressor,
+            &mut self.decoded_buffer,
+        )?;
         let mut offset = 0_usize;
         let (entry_chunks, remainder) = directory.as_chunks::<RECORD_ENTRY_SIZE>();
         debug_assert!(remainder.is_empty());

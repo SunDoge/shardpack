@@ -27,14 +27,19 @@ impl BlockCodec {
         stored: Bytes,
         raw_size: usize,
         context: &mut zrip::DecompressContext,
+        output_buffer: &mut crate::reusable_buffer::ReusableBuffer,
     ) -> Result<Bytes> {
         match self {
-            Self::None if stored.len() == raw_size => Ok(stored),
+            Self::None if stored.len() == raw_size => {
+                output_buffer.clear();
+                Ok(stored)
+            }
             Self::None => Err(Error::InvalidBlockHeader {
                 reason: "raw and stored sizes differ for codec none",
             }),
             Self::Zstd => {
-                let mut output = Vec::with_capacity(raw_size);
+                let mut output = output_buffer.take(raw_size);
+                output.clear();
                 let written = context
                     .decompress_into_with_limit(&stored, &mut output, raw_size)
                     .map_err(|source| Error::Decompression { source })?;
@@ -43,7 +48,7 @@ impl BlockCodec {
                         reason: "decompressed payload size differs from raw payload size",
                     });
                 }
-                Ok(Bytes::from(output))
+                Ok(output_buffer.retain(output))
             }
         }
     }

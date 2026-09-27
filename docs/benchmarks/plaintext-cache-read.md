@@ -25,6 +25,7 @@ vs 2.22–2.31 GiB/s. This is a local microbenchmark, not a training speedup cla
 - Each operation warms up, then runs for at least one second. Throughput is
   logical payload GiB/s. Each iteration reopens the cache and reads through EOF.
 - OS page cache is warm: these results are **not physical NVMe throughput**.
+  The temporary directory on this host is backed by tmpfs.
 - Both versions verify the full plaintext BLAKE3 identity at EOF. Record mode
   additionally parses headers, verifies CRC, allocates block storage and iterates
   records. Logical content fingerprinting is disabled in both.

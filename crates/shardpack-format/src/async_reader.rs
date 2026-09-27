@@ -23,6 +23,8 @@ pub struct AsyncShardReader<R> {
     expected_encryption: Option<crate::EncryptionAlgorithm>,
     collect_content_fingerprint: bool,
     decompressor: zrip::DecompressContext,
+    stored_buffer: crate::reusable_buffer::ReusableBuffer,
+    decoded_buffer: crate::reusable_buffer::ReusableBuffer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +83,8 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             expected_encryption: Some(expected_encryption),
             collect_content_fingerprint: true,
             decompressor: zrip::DecompressContext::new(),
+            stored_buffer: crate::reusable_buffer::ReusableBuffer::default(),
+            decoded_buffer: crate::reusable_buffer::ReusableBuffer::default(),
         })
     }
 
@@ -121,6 +125,8 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             expected_encryption,
             collect_content_fingerprint: true,
             decompressor: zrip::DecompressContext::new(),
+            stored_buffer: crate::reusable_buffer::ReusableBuffer::default(),
+            decoded_buffer: crate::reusable_buffer::ReusableBuffer::default(),
         }
     }
 
@@ -147,11 +153,15 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             Err(error) => {
                 self.failed = true;
                 self.pending.clear();
+                self.stored_buffer.clear();
+                self.decoded_buffer.clear();
                 self.fingerprint = fingerprint;
                 return Err(error);
             }
         };
         if !loaded {
+            self.stored_buffer.clear();
+            self.decoded_buffer.clear();
             return Ok(None);
         }
         let record = self.pending.pop_front();
@@ -265,7 +275,8 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             usize::try_from(header.raw_payload_bytes).map_err(|_| Error::InvalidBlockHeader {
                 reason: "raw payload too large for platform",
             })?;
-        let mut body = vec![0; stored_body_size];
+        let mut body = self.stored_buffer.take(stored_body_size);
+        body.resize(stored_body_size, 0);
         self.input
             .read_exact(&mut body)
             .await
@@ -303,7 +314,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
                 reason: "stored body is shorter than directory",
             });
         }
-        let body = bytes::Bytes::from(body);
+        let body = self.stored_buffer.retain(body);
         let directory = body.slice(..expected_directory);
         let stored = body.slice(expected_directory..);
         self.byte_offset = self
@@ -313,9 +324,12 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             .ok_or(Error::InvalidBlockHeader {
                 reason: "block offset overflow",
             })?;
-        let payload = header
-            .codec
-            .decompress(stored, raw_size, &mut self.decompressor)?;
+        let payload = header.codec.decompress(
+            stored,
+            raw_size,
+            &mut self.decompressor,
+            &mut self.decoded_buffer,
+        )?;
         let mut offset = 0_usize;
         let (entries, remainder) = directory.as_chunks::<RECORD_ENTRY_SIZE>();
         debug_assert!(remainder.is_empty());

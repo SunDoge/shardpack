@@ -9,6 +9,7 @@ mod encryption;
 mod fingerprint;
 mod hashing_reader;
 mod reader;
+mod reusable_buffer;
 mod shard_header;
 mod transcode;
 mod writer;

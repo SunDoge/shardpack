@@ -152,6 +152,52 @@ root = "{DATA}"
     return shardpack.Dataset(layout_key, config_path=config)
 
 
+@pytest.mark.parametrize("codec", ["none", "zstd"])
+@pytest.mark.parametrize("shuffle_records", [0, 4])
+def test_memoryview_survives_block_reuse_and_loader_drop(
+    tmp_path: Path, codec: str, shuffle_records: int
+) -> None:
+    config = {
+        "default_store": "local",
+        "stores": {
+            "local": {
+                "type": "filesystem",
+                "root": tmp_path / "objects",
+            }
+        },
+    }
+    writer = shardpack.DatasetWriter(
+        bytes([0x71]) * 32,
+        tmp_path / "staging",
+        config=config,
+        target_shard_bytes=1024 * 1024,
+        target_block_bytes=1024,
+        block_codec=codec,
+    )
+    samples = [bytes([i]) * 1024 for i in range(32)]
+    writer.write_batch(
+        b"".join(samples),
+        np.arange(33, dtype=np.uint64) * 1024,
+        np.repeat(np.arange(32, dtype=np.uint8)[:, None], 16, axis=1),
+    )
+    source = shardpack.Dataset(writer.finish(), config=config)
+    loader = source.records(
+        shuffle_max_records=shuffle_records, shuffle_max_bytes=4096 if shuffle_records else 0
+    )
+    record = next(loader)
+    view = record.payload[1:]
+    expected = samples[record.sample_id[0]][1:]
+    del record
+    count = 1
+    for record in loader:
+        assert bytes(record.payload) == samples[record.sample_id[0]]
+        count += 1
+    assert count == 32
+    del record, loader, source
+    assert view.readonly
+    assert bytes(view) == expected
+
+
 def test_simple_record_reader_preserves_records(dataset: shardpack.Dataset) -> None:
     loader = dataset.records()
     records = list(loader)

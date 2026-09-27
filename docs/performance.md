@@ -25,6 +25,10 @@ The optimized path:
   combines the results without concatenating the buffers;
 - transfers `None` payload buffers directly into `Bytes` without another copy;
 - reuses writer directory and payload capacity between blocks;
+- reclaims reader block allocations only when no record/slice references remain;
+  each reader retains at most one stored-body and one decoded-payload buffer,
+  each capped at 64 MiB allocation capacity; jumbo allocations are not retained,
+  and EOF/error releases both slots;
 - accounts for directory bytes before buffering a record, preventing tiny-record
   workloads from exceeding the configured block and shard soft targets;
 - reserves the decoded record queue from the validated block directory instead
@@ -41,6 +45,13 @@ loader.
 
 The bounded shuffle pool performs O(1) random eviction when its record-count
 limit binds and allocation-free reservoir selection when its byte limit binds.
+Records retained by the pool are copied into compact payload allocations so a
+small slice cannot pin a much larger source block. Immediately emitted records
+are not copied. Checkpoint restore applies the same rule without changing record
+order or RNG state. The byte budget covers retained payload storage, not record
+metadata, upstream buffers, downstream batches or separately held checkpoints.
+See the [buffer lifetime benchmarks](benchmarks/buffer-lifetimes.md) for measured
+memory/throughput tradeoffs and scope.
 The transitional Python reader is record-at-a-time but exposes each Rust `Bytes`
 payload as a zero-copy read-only memoryview. The production Rust dataloader can
 still avoid the remaining per-record Python object and scheduling overhead by
@@ -85,9 +96,12 @@ cargo bench -p shardpack-format --bench compression_compare
 
 The writer uses `zrip` with a reusable compression context and emits standard
 zstd frames. The reader uses zrip's reusable decoder workspace and decompresses
-directly into a caller-owned, exactly-sized `Vec`, which is then moved into
+directly into a caller-owned `Vec` bounded by the expected output size, then moved into
 `Bytes` without copying. The caller-owned buffer API is available in the upstream
 `zrip` 0.8.9 crates.io release; no fork or Git branch dependency is required.
+The reader can now reclaim the previous block's allocation when all consumers
+have released it; otherwise it allocates a new buffer without modifying live data.
+Earlier version-comparison reports describe the reader as it existed at the time.
 
 The [0.8.9 upgrade comparison](benchmarks/zrip-0.8.9.md) found modest improvements
 with reused output buffers, but regressions on the synthetic structured encoding

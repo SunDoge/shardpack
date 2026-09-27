@@ -142,6 +142,10 @@ tensor = torch.frombuffer(record.payload, dtype=torch.uint8).clone()
 
 For JPEG, audio, protobuf, and similar encoded records, prefer decoders that
 accept the buffer protocol so the encoded bytes stay zero-copy until decode.
+This describes the Python handoff: the optional Rust shuffle pool first compacts
+retained payloads once, so small records cannot pin whole source blocks. The
+returned memoryview adds no further payload copy. Live views prevent reader
+buffer reuse and remain valid after advancing or dropping the loader.
 
 Apache Fory 1.7 accepts the memoryview through its zero-copy `Buffer` wrapper;
 `Fory.deserialize()` itself currently accepts `bytes` or `Buffer`, not a raw

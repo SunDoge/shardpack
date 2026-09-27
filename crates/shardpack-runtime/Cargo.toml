@@ -33,3 +33,7 @@ workspace = true
 futures-util.workspace = true
 tempfile = "3.21"
 tokio.workspace = true
+
+[[bench]]
+name = "shuffle_memory"
+harness = false
