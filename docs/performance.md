@@ -418,6 +418,12 @@ additional byte before returning `ReadLimitExceeded` for oversized objects.
 
 ## Local-cache coordination
 
+The plaintext cache-hit verifier hashes directly in the caller's destination,
+with buffered small reads, instead of allocating and copying an intermediate
+chunk. The [paired cache benchmark](benchmarks/plaintext-cache-read.md) measured
+24.6% higher chunk throughput and 11.8% higher record-read throughput with warm
+OS page cache; full plaintext identity verification remains enabled.
+
 Cold misses are coordinated with bounded, striped cross-process file locks, so
 multiple Python workers requesting the same shard perform one object-store
 download. Lock waiting is asynchronous and does not occupy a Tokio blocking

@@ -2,10 +2,12 @@
 
 use std::{
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    task::{Context, Poll},
 };
 
 use async_stream::try_stream;
@@ -14,7 +16,7 @@ use futures_util::TryStreamExt;
 use shardpack_manifest::ShardId;
 use shardpack_storage::{AsyncObjectReader, Store};
 use snafu::Snafu;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 use tokio_util::io::StreamReader;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -673,41 +675,86 @@ async fn open_plaintext_hit(
     let Some(reader) = open_file_if_expected_size(path, metadata.plaintext_bytes).await? else {
         return Ok(None);
     };
-    Ok(Some((reader, metadata)))
+    // Coalesce small header reads. Large block/prefetch reads can bypass the
+    // buffer, avoiding both per-chunk allocations and an extra copy.
+    let reader = tokio::io::BufReader::with_capacity(1024 * 1024, reader);
+    Ok(Some((Box::pin(reader), metadata)))
 }
 
 fn verify_plaintext_reader(
-    mut reader: AsyncObjectReader,
+    reader: AsyncObjectReader,
     metadata: PlaintextMetadata,
     shard_id: ShardId,
 ) -> AsyncObjectReader {
-    let stream = try_stream! {
-        let mut hasher = blake3::Hasher::new();
-        let mut byte_size = 0_u64;
-        let mut buffer = vec![0_u8; 1024 * 1024];
-        loop {
-            let read = reader.read(&mut buffer).await
-                .map_err(|source| Error::Io {
+    Box::pin(VerifiedPlaintextReader {
+        reader,
+        metadata,
+        shard_id,
+        hasher: blake3::Hasher::new(),
+        byte_size: 0,
+        complete: false,
+        failed: false,
+    })
+}
+
+// Hash the bytes in the caller's destination. A stream adapter would allocate
+// and copy each chunk before AsyncRead copies it into that same destination.
+struct VerifiedPlaintextReader {
+    reader: AsyncObjectReader,
+    metadata: PlaintextMetadata,
+    shard_id: ShardId,
+    hasher: blake3::Hasher,
+    byte_size: u64,
+    complete: bool,
+    failed: bool,
+}
+
+impl AsyncRead for VerifiedPlaintextReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if this.failed {
+            return Poll::Ready(Err(std::io::Error::other(
+                "plaintext cache reader already failed",
+            )));
+        }
+        if this.complete || output.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        let start = output.filled().len();
+        match this.reader.as_mut().poll_read(cx, output) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(source)) => {
+                this.failed = true;
+                Poll::Ready(Err(std::io::Error::other(Error::Io {
                     operation: "read plaintext cache entry",
-                    path: shard_id.to_string(),
+                    path: this.shard_id.to_string(),
                     source,
-                })?;
-            if read == 0 {
-                break;
+                })))
             }
-            hasher.update(&buffer[..read]);
-            byte_size = byte_size.saturating_add(read as u64);
-            yield Bytes::copy_from_slice(&buffer[..read]);
+            Poll::Ready(Ok(())) => {
+                let bytes = &output.filled()[start..];
+                if !bytes.is_empty() {
+                    this.hasher.update(bytes);
+                    this.byte_size = this.byte_size.saturating_add(bytes.len() as u64);
+                    return Poll::Ready(Ok(()));
+                }
+                if this.byte_size != this.metadata.plaintext_bytes
+                    || this.hasher.finalize().as_bytes() != &this.metadata.plaintext_id
+                {
+                    this.failed = true;
+                    return Poll::Ready(Err(std::io::Error::other(Error::IdentityMismatch {
+                        shard_id: this.shard_id,
+                    })));
+                }
+                this.complete = true;
+                Poll::Ready(Ok(()))
+            }
         }
-        if byte_size != metadata.plaintext_bytes
-            || hasher.finalize().as_bytes() != &metadata.plaintext_id
-        {
-            Err(Error::IdentityMismatch { shard_id })?;
-        }
-    };
-    Box::pin(StreamReader::new(
-        stream.map_err(|error: Error| std::io::Error::other(error)),
-    ))
+    }
 }
 
 fn account_remote(
@@ -963,6 +1010,117 @@ mod tests {
     use tokio::io::AsyncReadExt;
 
     use super::{DOWNLOAD_LOCK_DIRECTORY, LocalCache, plaintext_meta_path};
+
+    fn plaintext_metadata(bytes: &[u8]) -> super::PlaintextMetadata {
+        super::PlaintextMetadata {
+            source_id: [1; 32],
+            plaintext_id: *blake3::hash(bytes).as_bytes(),
+            key_commitment: [2; 32],
+            plaintext_bytes: bytes.len() as u64,
+        }
+    }
+
+    #[tokio::test]
+    async fn plaintext_verifier_handles_empty_reads_small_reads_and_repeated_eof() {
+        let bytes = b"verified bytes";
+        let mut reader = super::verify_plaintext_reader(
+            Box::pin(std::io::Cursor::new(bytes)),
+            plaintext_metadata(bytes),
+            shardpack_manifest::ShardId([1; 32]),
+        );
+        assert_eq!(reader.read(&mut []).await.unwrap(), 0);
+        for expected in bytes {
+            let mut byte = [0];
+            assert_eq!(reader.read(&mut byte).await.unwrap(), 1);
+            assert_eq!(byte[0], *expected);
+        }
+        for _ in 0..2 {
+            assert_eq!(reader.read(&mut [0; 1]).await.unwrap(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn plaintext_verifier_rejects_modified_truncated_and_extended_content() {
+        for actual in [b"bad".as_slice(), b"ok", b"okay"] {
+            let mut reader = super::verify_plaintext_reader(
+                Box::pin(std::io::Cursor::new(actual)),
+                plaintext_metadata(b"ok!"),
+                shardpack_manifest::ShardId([1; 32]),
+            );
+            let error = reader.read_to_end(&mut Vec::new()).await.unwrap_err();
+            assert!(error.to_string().contains("identity verification"));
+            assert!(reader.read(&mut [0; 1]).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn plaintext_verifier_reads_directly_into_prefilled_destination_after_pending() {
+        struct DestinationReader {
+            expected: usize,
+            pending: bool,
+            emitted: bool,
+        }
+        impl tokio::io::AsyncRead for DestinationReader {
+            fn poll_read(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+                buffer: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                if !self.pending {
+                    self.pending = true;
+                    cx.waker().wake_by_ref();
+                    return std::task::Poll::Pending;
+                }
+                if !self.emitted {
+                    assert_eq!(
+                        buffer.initialize_unfilled().as_ptr() as usize,
+                        self.expected
+                    );
+                    buffer.put_slice(b"abc");
+                    self.emitted = true;
+                }
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+        let mut destination = [0; 8];
+        let expected = destination[2..].as_ptr() as usize;
+        let mut reader = super::verify_plaintext_reader(
+            Box::pin(DestinationReader {
+                expected,
+                pending: false,
+                emitted: false,
+            }),
+            plaintext_metadata(b"abc"),
+            shardpack_manifest::ShardId([1; 32]),
+        );
+        let mut output = tokio::io::ReadBuf::new(&mut destination);
+        output.put_slice(b"xx");
+        futures_util::future::poll_fn(|cx| reader.as_mut().poll_read(cx, &mut output))
+            .await
+            .unwrap();
+        assert_eq!(output.filled(), b"xxabc");
+        // Neither the prefilled prefix nor a Pending poll may enter the hash.
+        assert_eq!(reader.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn plaintext_verifier_io_error_is_terminal() {
+        let stream = stream::iter([Err::<Bytes, _>(std::io::Error::other("source failure"))]);
+        let mut reader = super::verify_plaintext_reader(
+            Box::pin(tokio_util::io::StreamReader::new(stream)),
+            plaintext_metadata(b""),
+            shardpack_manifest::ShardId([1; 32]),
+        );
+        assert!(
+            reader
+                .read(&mut [0; 1])
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("source failure")
+        );
+        assert!(reader.read(&mut [0; 1]).await.is_err());
+    }
 
     async fn publish_remote(
         store: &shardpack_storage::Store,

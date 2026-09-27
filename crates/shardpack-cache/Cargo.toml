@@ -24,3 +24,7 @@ tempfile = "3.21"
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "plaintext_read"
+harness = false
