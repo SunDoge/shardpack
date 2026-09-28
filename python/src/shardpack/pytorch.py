@@ -33,6 +33,7 @@ class ThreadedDataLoader(ThreadedLoader):
         drop_last: bool = False,
         pin_memory: bool = False,
         pin_memory_device: str | None = None,
+        enable_stats: bool = False,
     ) -> None:
         base_collate = default_collate if collate_fn is None else collate_fn
 
@@ -55,4 +56,5 @@ class ThreadedDataLoader(ThreadedLoader):
             collate_fn=collate,
             consumer_fn=consumer_fn,
             drop_last=drop_last,
+            enable_stats=enable_stats,
         )

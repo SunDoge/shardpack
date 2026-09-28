@@ -1,5 +1,9 @@
 # Python SDK
 
+For training bottleneck diagnostics, enable `ThreadedLoader(..., enable_stats=True)`
+and query `loader.stats()`. See [loader observability](loader-observability.md)
+for stage timings, queue waits, native source counters, and measurement limits.
+
 The Python package is the offline ingestion and upload interface for ShardPack.
 It is a mixed Python/Rust project managed by `uv` and `maturin`, and builds one
 abi3 extension for CPython 3.11 and newer.

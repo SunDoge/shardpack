@@ -1,0 +1,15 @@
+{"round": 0, "mode": "baseline", "seconds": 1.0721327271312475, "records_per_second": 106971.83016404667}
+{"round": 0, "mode": "disabled", "seconds": 1.0123877809382975, "records_per_second": 105192.89347931261}
+{"round": 0, "mode": "enabled", "seconds": 1.0375647591426969, "records_per_second": 102640.3403369192}
+{"round": 1, "mode": "disabled", "seconds": 1.0236319568939507, "records_per_second": 104037.39281757602}
+{"round": 1, "mode": "enabled", "seconds": 1.010493341833353, "records_per_second": 105390.10559612667}
+{"round": 1, "mode": "baseline", "seconds": 1.0645813080482185, "records_per_second": 107730.61590783199}
+{"round": 2, "mode": "enabled", "seconds": 1.045500478008762, "records_per_second": 101861.2638062395}
+{"round": 2, "mode": "baseline", "seconds": 1.0610578709747642, "records_per_second": 108088.35515695231}
+{"round": 2, "mode": "disabled", "seconds": 1.0064203289803118, "records_per_second": 105816.6224721434}
+{"round": 3, "mode": "baseline", "seconds": 1.0610464520286769, "records_per_second": 108089.51840018059}
+{"round": 3, "mode": "disabled", "seconds": 1.0634556310251355, "records_per_second": 107844.6497005659}
+{"round": 3, "mode": "enabled", "seconds": 1.0706499749794602, "records_per_second": 99468.549468787}
+{"round": 4, "mode": "disabled", "seconds": 1.0020658608991653, "records_per_second": 106276.44764231356}
+{"round": 4, "mode": "enabled", "seconds": 1.0651466301642358, "records_per_second": 99982.47845329923}
+{"round": 4, "mode": "baseline", "seconds": 1.0713632609695196, "records_per_second": 107048.65863723405}

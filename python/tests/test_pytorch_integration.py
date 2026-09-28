@@ -68,6 +68,7 @@ def test_fory_writer_to_threaded_pytorch_round_trip(tmp_path: Path) -> None:
         decode=decode_fory,
         batch_size=4,
         decode_workers=2,
+        enable_stats=True,
     )
     decoded = {
         int(index): (int(label), text)
@@ -75,6 +76,11 @@ def test_fory_writer_to_threaded_pytorch_round_trip(tmp_path: Path) -> None:
         for index, label, text in zip(batch["index"], batch["label"], batch["text"])
     }
     assert decoded == {sample["index"]: (sample["label"], sample["text"]) for sample in samples}
+    stats = loader.stats()
+    assert stats["batches_delivered"] == 5
+    assert stats["source"]["records_read"] == 17
+    assert stats["timings"]["decode"]["items"] == 17
+    assert stats["status"] == "completed"
 
 
 def test_rust_epoch_and_pool_shuffle_advance_without_iterable_dataset(tmp_path: Path) -> None:

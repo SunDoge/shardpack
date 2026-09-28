@@ -10,9 +10,11 @@ from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from os import PathLike
+from time import perf_counter
 from typing import Any
 
 from ._native import EpochScheduler
+from ._stats import LoaderStats, measured
 from .api import Config, Dataset
 
 
@@ -99,6 +101,13 @@ class ShardPackSource:
         self.encryption_key_path = (
             None if encryption_key_path is None else os.fspath(encryption_key_path)
         )
+        self._record_loader: Any = None
+        self._last_metrics: dict[str, int] = {}
+
+    def stats(self) -> dict[str, int]:
+        """Native counters for the latest started epoch (also retained at EOF)."""
+        loader = self._record_loader
+        return loader.metrics() if loader is not None else dict(self._last_metrics)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -121,7 +130,7 @@ class ShardPackSource:
             config_path=self.config_path,
             store=self.store,
         )
-        yield from dataset.records(
+        records = dataset.records(
             cache_dir=self.cache_dir,
             cache_max_bytes=self.cache_max_bytes,
             cache_mode=self.cache_mode,
@@ -140,6 +149,14 @@ class ShardPackSource:
             encryption_key=self.encryption_key,
             encryption_key_path=self.encryption_key_path,
         )
+        self._record_loader = records
+        self._last_metrics = {}
+        try:
+            yield from records
+        finally:
+            if self._record_loader is records:
+                self._last_metrics = records.metrics()
+                self._record_loader = None
 
 
 class ThreadedLoader:
@@ -163,6 +180,7 @@ class ThreadedLoader:
         collate_fn: Callable[[list[Any]], Any] | None = None,
         consumer_fn: Callable[[Any], Any] | None = None,
         drop_last: bool = False,
+        enable_stats: bool = False,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
@@ -186,58 +204,114 @@ class ThreadedLoader:
         self.collate_fn = _keep_list if collate_fn is None else collate_fn
         self.consumer_fn = _identity if consumer_fn is None else consumer_fn
         self.drop_last = drop_last
+        self.enable_stats = enable_stats
+        self._stats: LoaderStats | None = None
+
+    def stats(self) -> dict[str, Any]:
+        """Detached CPU-side snapshot for the latest started iteration."""
+        if not self.enable_stats:
+            return {"enabled": False}
+        if self._stats is None:
+            return {"enabled": self.enable_stats, "status": "not_started"}
+        result = self._stats.snapshot()
+        if isinstance(self.source, ShardPackSource):
+            result["source"] = self.source.stats()
+        return result
 
     def __iter__(self) -> Iterator[Any]:
+        stats = LoaderStats() if self.enable_stats else None
+        self._stats = stats
         output: queue.Queue[_Batch | _Failure | _End] = queue.Queue(self.prefetch_batches)
         stop = threading.Event()
         producer = threading.Thread(
             target=self._produce,
-            args=(output, stop),
+            args=(output, stop, stats),
             name="shardpack-threaded-loader",
         )
         producer.start()
+        status = "closed"
         try:
             while True:
-                item = output.get()
+                delivery_started = perf_counter() if stats is not None else 0.0
+                if stats is None:
+                    item = output.get()
+                else:
+                    try:
+                        item = output.get_nowait()
+                    except queue.Empty:
+                        item = measured(stats, "batch_wait", output.get)
+                    stats.gauge("batch_queue", output.qsize())
                 if isinstance(item, _Batch):
-                    yield self.consumer_fn(item.value)
+                    value = (
+                        self.consumer_fn(item.value)
+                        if stats is None
+                        else measured(stats, "consumer", self.consumer_fn, item.value)
+                    )
+                    if stats is not None:
+                        stats.observe("batch_delivery", perf_counter() - delivery_started)
+                        stats.delivered()
+                    yield value
                 elif isinstance(item, _Failure):
                     raise item.error
                 else:
+                    status = "completed"
                     return
+        except Exception:
+            status = "failed"
+            raise
         finally:
             stop.set()
             producer.join()
+            if stats is not None:
+                stats.finish(status)
 
     def _put(
         self,
         output: queue.Queue[_Batch | _Failure | _End],
         item: _Batch | _Failure | _End,
         stop: threading.Event,
+        stats: LoaderStats | None = None,
     ) -> bool:
+        if stop.is_set():
+            return False
+        started = None
+        if stats is not None:
+            try:
+                output.put_nowait(item)
+                stats.gauge("batch_queue", output.qsize())
+                return True
+            except queue.Full:
+                started = perf_counter()
         while not stop.is_set():
             try:
                 output.put(item, timeout=0.1)
+                if stats is not None:
+                    stats.gauge("batch_queue", output.qsize())
+                    assert started is not None
+                    stats.observe("batch_backpressure", perf_counter() - started)
                 return True
             except queue.Full:
                 pass
+        if stats is not None and started is not None:
+            stats.observe("batch_backpressure", perf_counter() - started)
         return False
 
     def _produce(
         self,
         output: queue.Queue[_Batch | _Failure | _End],
         stop: threading.Event,
+        stats: LoaderStats | None,
     ) -> None:
         pending: deque[Future[list[Any]]] = deque()
         pending_records = 0
         batch: list[Any] = []
-        source = iter(self.source)
         exhausted = False
         executor = ThreadPoolExecutor(
             max_workers=self.decode_workers,
             thread_name_prefix="shardpack-decode",
         )
         try:
+            source = iter(self.source)
             while not stop.is_set():
                 while not exhausted and pending_records < self.decode_prefetch:
                     records = []
@@ -245,33 +319,69 @@ class ThreadedLoader:
                         self.decode_task_records,
                         self.decode_prefetch - pending_records,
                     )
-                    for _ in range(capacity):
-                        try:
-                            records.append(next(source))
-                        except StopIteration:
-                            exhausted = True
-                            break
+                    started = perf_counter() if stats is not None else 0.0
+                    try:
+                        for _ in range(capacity):
+                            try:
+                                records.append(next(source))
+                            except StopIteration:
+                                exhausted = True
+                                break
+                    finally:
+                        if stats is not None:
+                            stats.observe("source", perf_counter() - started, len(records))
                     if records:
-                        pending.append(executor.submit(_decode_chunk, self.decode, records))
+                        if stats is None:
+                            future = executor.submit(_decode_chunk, self.decode, records)
+                        else:
+                            future = executor.submit(
+                                measured,
+                                stats,
+                                "decode",
+                                _decode_chunk,
+                                self.decode,
+                                records,
+                                items=len(records),
+                            )
+                        pending.append(future)
                         pending_records += len(records)
+                        if stats is not None:
+                            stats.gauge("decode_inflight_records", pending_records)
 
                 if not pending:
                     break
-                samples = pending.popleft().result()
+                future = pending.popleft()
+                samples = (
+                    future.result()
+                    if stats is None
+                    else measured(stats, "decode_result_wait", future.result)
+                )
                 pending_records -= len(samples)
+                if stats is not None:
+                    stats.gauge("decode_inflight_records", pending_records)
                 for sample in samples:
                     batch.append(sample)
                     if len(batch) == self.batch_size:
-                        if not self._put(output, _Batch(self.collate_fn(batch)), stop):
+                        value = (
+                            self.collate_fn(batch)
+                            if stats is None
+                            else measured(stats, "collate", self.collate_fn, batch)
+                        )
+                        if not self._put(output, _Batch(value), stop, stats):
                             return
                         batch = []
 
             if batch and not self.drop_last and not stop.is_set():
-                self._put(output, _Batch(self.collate_fn(batch)), stop)
+                value = (
+                    self.collate_fn(batch)
+                    if stats is None
+                    else measured(stats, "collate", self.collate_fn, batch)
+                )
+                self._put(output, _Batch(value), stop, stats)
             if not stop.is_set():
-                self._put(output, _END, stop)
+                self._put(output, _END, stop, stats)
         except Exception as error:  # noqa: BLE001 - forward producer failures
-            self._put(output, _Failure(error), stop)
+            self._put(output, _Failure(error), stop, stats)
         finally:
             stop.set()
             for future in pending:
