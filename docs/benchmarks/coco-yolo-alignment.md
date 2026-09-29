@@ -127,3 +127,7 @@ One seed cannot establish a robust non-inferiority bound. If the observed gap
 is within one point, the next step is a larger training set and multiple seeds,
 then matched stochastic augmentation including Mosaic. Speed is an independent
 criterion: an acceptable metric gap does not prove a speedup.
+
+Follow-up: [targeted cold-cache loader startup](coco-cold-loader.md) measures
+loader-only cold/warm performance and verifies block-storage reads via Linux
+process I/O counters.

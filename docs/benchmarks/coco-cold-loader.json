@@ -1,0 +1,840 @@
+{
+  "summary": [
+    {
+      "mode": "map",
+      "pass": "cold",
+      "seconds": 10.033976631937549,
+      "images_per_second": 816.4260592281382,
+      "first_batch_seconds": 3.1922990719322115,
+      "read_bytes": 1349996544,
+      "cpu_seconds": 33.11
+    },
+    {
+      "mode": "map",
+      "pass": "warm",
+      "seconds": 4.486241532955319,
+      "images_per_second": 1826.027408427006,
+      "first_batch_seconds": 0.07716546906158328,
+      "read_bytes": 0,
+      "cpu_seconds": 23.98
+    },
+    {
+      "mode": "stream",
+      "pass": "cold",
+      "seconds": 4.109949262114242,
+      "images_per_second": 1993.2119541022919,
+      "first_batch_seconds": 0.22739044995978475,
+      "read_bytes": 1338585088,
+      "cpu_seconds": 22.110000000000003
+    },
+    {
+      "mode": "stream",
+      "pass": "warm",
+      "seconds": 4.165151074994355,
+      "images_per_second": 1966.795406097269,
+      "first_batch_seconds": 0.20139740710146725,
+      "read_bytes": 0,
+      "cpu_seconds": 22.440000000000005
+    }
+  ],
+  "reports": [
+    {
+      "round": 1,
+      "mode": "map",
+      "eviction": {
+        "files": 8192,
+        "bytes": 1333160248,
+        "seconds": 0.12885704799555242
+      },
+      "results": [
+        {
+          "mode": "map",
+          "pass": "cold",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 10.033976631937549,
+          "images_per_second": 816.4260592281382,
+          "first_batch_seconds": 3.166712381877005,
+          "process_tree": {
+            "read_bytes": 1350336512,
+            "cpu_seconds": 33.11
+          }
+        },
+        {
+          "mode": "map",
+          "pass": "warm",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 4.486241532955319,
+          "images_per_second": 1826.027408427006,
+          "first_batch_seconds": 0.08894033799879253,
+          "process_tree": {
+            "read_bytes": 0,
+            "cpu_seconds": 23.98
+          }
+        }
+      ],
+      "batch": 16,
+      "workers": 4,
+      "note": "advisory eviction; proc IO includes worker startup/library reads"
+    },
+    {
+      "round": 2,
+      "mode": "map",
+      "eviction": {
+        "files": 8192,
+        "bytes": 1333160248,
+        "seconds": 0.1150307091884315
+      },
+      "results": [
+        {
+          "mode": "map",
+          "pass": "cold",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 9.8646255210042,
+          "images_per_second": 830.442066204868,
+          "first_batch_seconds": 3.214779257075861,
+          "process_tree": {
+            "read_bytes": 1349996544,
+            "cpu_seconds": 32.7
+          }
+        },
+        {
+          "mode": "map",
+          "pass": "warm",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 4.376730878837407,
+          "images_per_second": 1871.7166366363483,
+          "first_batch_seconds": 0.07700862199999392,
+          "process_tree": {
+            "read_bytes": 0,
+            "cpu_seconds": 23.74
+          }
+        }
+      ],
+      "batch": 16,
+      "workers": 4,
+      "note": "advisory eviction; proc IO includes worker startup/library reads"
+    },
+    {
+      "round": 3,
+      "mode": "map",
+      "eviction": {
+        "files": 8192,
+        "bytes": 1333160248,
+        "seconds": 0.10925898398272693
+      },
+      "results": [
+        {
+          "mode": "map",
+          "pass": "cold",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 10.140039552003145,
+          "images_per_second": 807.8863951158539,
+          "first_batch_seconds": 3.1922990719322115,
+          "process_tree": {
+            "read_bytes": 1349996544,
+            "cpu_seconds": 33.68
+          }
+        },
+        {
+          "mode": "map",
+          "pass": "warm",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 4.615654387045652,
+          "images_per_second": 1774.8295936090365,
+          "first_batch_seconds": 0.07716546906158328,
+          "process_tree": {
+            "read_bytes": 0,
+            "cpu_seconds": 24.36
+          }
+        }
+      ],
+      "batch": 16,
+      "workers": 4,
+      "note": "advisory eviction; proc IO includes worker startup/library reads"
+    },
+    {
+      "round": 1,
+      "mode": "stream",
+      "eviction": {
+        "files": 17,
+        "bytes": 2156553471,
+        "seconds": 0.11199109093286097
+      },
+      "results": [
+        {
+          "mode": "stream",
+          "pass": "cold",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 4.0460976250469685,
+          "images_per_second": 2024.6669159162725,
+          "first_batch_seconds": 0.22739044995978475,
+          "process_tree": {
+            "read_bytes": 1338601472,
+            "cpu_seconds": 22.04
+          },
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 4.04607083206065,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.1424168455414474,
+                "mean_seconds": 0.0005575484848908967,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000040549784898757935,
+                "p95_seconds": 0.00002118595875799656
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 14.949413408059627,
+                "mean_seconds": 0.007299518265654115,
+                "recent_samples": 256,
+                "p50_seconds": 0.006634967867285013,
+                "p95_seconds": 0.008383378153666854
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 1.0176093915943056,
+                "mean_seconds": 0.000496879585739407,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000018689315766096115,
+                "p95_seconds": 0.003236382035538554
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 1.7545600133016706,
+                "mean_seconds": 0.0034268750259798253,
+                "recent_samples": 256,
+                "p50_seconds": 0.003356069093570113,
+                "p95_seconds": 0.00414200103841722
+              },
+              "batch_wait": {
+                "calls": 513,
+                "items": 513,
+                "total_seconds": 3.9364218816626817,
+                "mean_seconds": 0.007673337001291777,
+                "recent_samples": 256,
+                "p50_seconds": 0.00663703097961843,
+                "p95_seconds": 0.010099685983732343
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.00031434674747288227,
+                "mean_seconds": 6.139584911579732e-7,
+                "recent_samples": 256,
+                "p50_seconds": 5.559995770454407e-7,
+                "p95_seconds": 0.0000010970979928970337
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 3.9447849721182138,
+                "mean_seconds": 0.007704658148668386,
+                "recent_samples": 256,
+                "p50_seconds": 0.006657069083303213,
+                "p95_seconds": 0.010114761069417
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 1
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          }
+        },
+        {
+          "mode": "stream",
+          "pass": "warm",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 4.165151074994355,
+          "images_per_second": 1966.795406097269,
+          "first_batch_seconds": 0.20139740710146725,
+          "process_tree": {
+            "read_bytes": 0,
+            "cpu_seconds": 22.440000000000005
+          },
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 4.165123957907781,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.1487884598318487,
+                "mean_seconds": 0.0005606581063112976,
+                "recent_samples": 256,
+                "p50_seconds": 0.000003436114639043808,
+                "p95_seconds": 0.000021274900063872337
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 15.674602819141,
+                "mean_seconds": 0.007653614657783692,
+                "recent_samples": 256,
+                "p50_seconds": 0.0064873769879341125,
+                "p95_seconds": 0.007819670950993896
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 1.2009075027890503,
+                "mean_seconds": 0.000586380616596216,
+                "recent_samples": 256,
+                "p50_seconds": 0.0006245109252631664,
+                "p95_seconds": 0.0027325120754539967
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 1.6946035237051547,
+                "mean_seconds": 0.00330977250723663,
+                "recent_samples": 256,
+                "p50_seconds": 0.003133149817585945,
+                "p95_seconds": 0.0038459941279143095
+              },
+              "batch_wait": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 4.0520803921390325,
+                "mean_seconds": 0.007914219515896548,
+                "recent_samples": 256,
+                "p50_seconds": 0.006468813866376877,
+                "p95_seconds": 0.010348008945584297
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.00035443389788269997,
+                "mean_seconds": 6.922537068021484e-7,
+                "recent_samples": 256,
+                "p50_seconds": 8.521601557731628e-7,
+                "p95_seconds": 0.0000010849907994270325
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 4.061501829419285,
+                "mean_seconds": 0.007932620760584541,
+                "recent_samples": 256,
+                "p50_seconds": 0.006494251079857349,
+                "p95_seconds": 0.010357595048844814
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 2
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          }
+        }
+      ],
+      "batch": 16,
+      "workers": 4,
+      "note": "advisory eviction; proc IO includes worker startup/library reads"
+    },
+    {
+      "round": 2,
+      "mode": "stream",
+      "eviction": {
+        "files": 17,
+        "bytes": 2156553471,
+        "seconds": 0.06539568398147821
+      },
+      "results": [
+        {
+          "mode": "stream",
+          "pass": "cold",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 4.351989520015195,
+          "images_per_second": 1882.3574740527863,
+          "first_batch_seconds": 0.23494135402143002,
+          "process_tree": {
+            "read_bytes": 1338585088,
+            "cpu_seconds": 23.48
+          },
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 4.351963973138481,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.308972597355023,
+                "mean_seconds": 0.0006388348449756091,
+                "recent_samples": 256,
+                "p50_seconds": 0.000004093162715435028,
+                "p95_seconds": 0.000021778978407382965
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 16.16328177205287,
+                "mean_seconds": 0.00789222742776019,
+                "recent_samples": 256,
+                "p50_seconds": 0.006669654045253992,
+                "p95_seconds": 0.01025554584339261
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 1.0224487301893532,
+                "mean_seconds": 0.0004992425440377701,
+                "recent_samples": 256,
+                "p50_seconds": 0.000001976964995265007,
+                "p95_seconds": 0.004166593076661229
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 1.8836373081430793,
+                "mean_seconds": 0.0036789791174669517,
+                "recent_samples": 256,
+                "p50_seconds": 0.003436716040596366,
+                "p95_seconds": 0.004373686853796244
+              },
+              "batch_wait": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 4.228294201428071,
+                "mean_seconds": 0.0082583871121642,
+                "recent_samples": 256,
+                "p50_seconds": 0.007191730896010995,
+                "p95_seconds": 0.011279355036094785
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.0003493456169962883,
+                "mean_seconds": 6.823156581958756e-7,
+                "recent_samples": 256,
+                "p50_seconds": 5.359761416912079e-7,
+                "p95_seconds": 0.0000011259689927101135
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 4.238299205899239,
+                "mean_seconds": 0.00827792813652195,
+                "recent_samples": 256,
+                "p50_seconds": 0.0072136870585381985,
+                "p95_seconds": 0.01130390795879066
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 2
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          }
+        },
+        {
+          "mode": "stream",
+          "pass": "warm",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 4.085283237975091,
+          "images_per_second": 2005.2465209390089,
+          "first_batch_seconds": 0.19687593914568424,
+          "process_tree": {
+            "read_bytes": 0,
+            "cpu_seconds": 21.900000000000006
+          },
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 4.0852612720336765,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.1814948301762342,
+                "mean_seconds": 0.0005766202197053364,
+                "recent_samples": 256,
+                "p50_seconds": 0.000006771879270672798,
+                "p95_seconds": 0.000023688888177275658
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 15.302537105977535,
+                "mean_seconds": 0.007471941946278093,
+                "recent_samples": 256,
+                "p50_seconds": 0.006756283110007644,
+                "p95_seconds": 0.009951844811439514
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 1.068445889512077,
+                "mean_seconds": 0.0005217020944883188,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000024870969355106354,
+                "p95_seconds": 0.004159971140325069
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 1.6982710876036435,
+                "mean_seconds": 0.0033169357179758663,
+                "recent_samples": 256,
+                "p50_seconds": 0.0032841430511325598,
+                "p95_seconds": 0.0038829410914331675
+              },
+              "batch_wait": {
+                "calls": 513,
+                "items": 513,
+                "total_seconds": 3.9794583106413484,
+                "mean_seconds": 0.007757228675714129,
+                "recent_samples": 256,
+                "p50_seconds": 0.006788745988160372,
+                "p95_seconds": 0.010557820089161396
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.0003137555904686451,
+                "mean_seconds": 6.128038876340725e-7,
+                "recent_samples": 256,
+                "p50_seconds": 7.899943739175797e-7,
+                "p95_seconds": 0.000001084059476852417
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 3.988165855873376,
+                "mean_seconds": 0.007789386437252688,
+                "recent_samples": 256,
+                "p50_seconds": 0.006819328060373664,
+                "p95_seconds": 0.010581898968666792
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 1
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          }
+        }
+      ],
+      "batch": 16,
+      "workers": 4,
+      "note": "advisory eviction; proc IO includes worker startup/library reads"
+    },
+    {
+      "round": 3,
+      "mode": "stream",
+      "eviction": {
+        "files": 17,
+        "bytes": 2156553471,
+        "seconds": 0.07513615605421364
+      },
+      "results": [
+        {
+          "mode": "stream",
+          "pass": "cold",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 4.109949262114242,
+          "images_per_second": 1993.2119541022919,
+          "first_batch_seconds": 0.22592182899825275,
+          "process_tree": {
+            "read_bytes": 1338585088,
+            "cpu_seconds": 22.110000000000003
+          },
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 4.109912875108421,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.0933712848927826,
+                "mean_seconds": 0.0005336121448964288,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000030209776014089584,
+                "p95_seconds": 0.00002001994289457798
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 15.26443377812393,
+                "mean_seconds": 0.007453336805724575,
+                "recent_samples": 256,
+                "p50_seconds": 0.006814965046942234,
+                "p95_seconds": 0.009703858057036996
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 1.2297986324410886,
+                "mean_seconds": 0.0006004876134966253,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000026619527488946915,
+                "p95_seconds": 0.004080113023519516
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 1.6673222498502582,
+                "mean_seconds": 0.0032564887692387856,
+                "recent_samples": 256,
+                "p50_seconds": 0.0030803121626377106,
+                "p95_seconds": 0.0036923899315297604
+              },
+              "batch_wait": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 3.9792805961333215,
+                "mean_seconds": 0.007772032414322894,
+                "recent_samples": 256,
+                "p50_seconds": 0.006709687877446413,
+                "p95_seconds": 0.010062274988740683
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.0003620958887040615,
+                "mean_seconds": 7.072185326251201e-7,
+                "recent_samples": 256,
+                "p50_seconds": 7.110647857189178e-7,
+                "p95_seconds": 0.000001010950654745102
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 3.9895221926271915,
+                "mean_seconds": 0.0077920355324749835,
+                "recent_samples": 256,
+                "p50_seconds": 0.006721218815073371,
+                "p95_seconds": 0.010085541987791657
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 2
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          }
+        },
+        {
+          "mode": "stream",
+          "pass": "warm",
+          "records": 8192,
+          "batches": 512,
+          "seconds": 4.379998740972951,
+          "images_per_second": 1870.3201723250427,
+          "first_batch_seconds": 0.2070330090355128,
+          "process_tree": {
+            "read_bytes": 0,
+            "cpu_seconds": 23.640000000000004
+          },
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 4.3799722080584615,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.245318567380309,
+                "mean_seconds": 0.0006077689445487111,
+                "recent_samples": 256,
+                "p50_seconds": 0.000005247071385383606,
+                "p95_seconds": 0.000028064008802175522
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 16.355161572573707,
+                "mean_seconds": 0.007985918736608255,
+                "recent_samples": 256,
+                "p50_seconds": 0.00687421509064734,
+                "p95_seconds": 0.008227640995755792
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 0.9595657922327518,
+                "mean_seconds": 0.00046853798448864836,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000031259842216968536,
+                "p95_seconds": 0.00224828883074224
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 2.0364991570822895,
+                "mean_seconds": 0.003977537416176347,
+                "recent_samples": 256,
+                "p50_seconds": 0.004049450159072876,
+                "p95_seconds": 0.0052353800274431705
+              },
+              "batch_wait": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 4.258152294438332,
+                "mean_seconds": 0.008316703700074868,
+                "recent_samples": 256,
+                "p50_seconds": 0.00706301094032824,
+                "p95_seconds": 0.011283484986051917
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.0003241563681513071,
+                "mean_seconds": 6.331179065455217e-7,
+                "recent_samples": 256,
+                "p50_seconds": 5.608890205621719e-7,
+                "p95_seconds": 0.000001069856807589531
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 4.267138509778306,
+                "mean_seconds": 0.008334254901910754,
+                "recent_samples": 256,
+                "p50_seconds": 0.007089012069627643,
+                "p95_seconds": 0.01130703091621399
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 2
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          }
+        }
+      ],
+      "batch": 16,
+      "workers": 4,
+      "note": "advisory eviction; proc IO includes worker startup/library reads"
+    }
+  ]
+}
