@@ -47,6 +47,9 @@ torch = [
   "pyfory>=1.7,<2",
   "torch>=2.8",
 ]
+yolo = [
+  "ultralytics==8.4.159",
+]
 
 [tool.maturin]
 manifest-path = "../crates/shardpack-python/Cargo.toml"

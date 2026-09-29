@@ -18,7 +18,8 @@ Install the optional test dependency in the existing Python environment:
 
 ```bash
 cd python
-uv pip install --python .venv/bin/python 'ultralytics==8.4.159'
+uv sync --group torch --group yolo
+uv run --no-sync maturin develop --release
 uv run --no-sync pytest -q tests/test_ultralytics_integration.py
 ```
 
@@ -91,3 +92,7 @@ or throughput. No pretrained checkpoint or external dataset is downloaded.
 
 Upstream references: [custom trainer hooks](https://docs.ultralytics.com/usage/engine/),
 [detection trainer](https://docs.ultralytics.com/reference/models/yolo/detect/train/).
+
+For the subsequent real-GPU, 8,192-train/5,000-val COCO experiment, see
+[COCO alignment results](benchmarks/coco-yolo-alignment.md). The single-seed
+best-checkpoint gap was −0.237 mAP50–95 points; throughput was effectively tied.

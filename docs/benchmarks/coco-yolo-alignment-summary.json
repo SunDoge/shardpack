@@ -1,0 +1,19 @@
+{
+  "map": {
+    "best_map50_95_percent": 31.526,
+    "last_map50_95_percent": 31.508000000000003,
+    "median_steady_train_images_per_second": 343.8117897651908,
+    "wall_seconds": 380.0300281147938
+  },
+  "stream": {
+    "best_map50_95_percent": 31.289,
+    "last_map50_95_percent": 31.232,
+    "median_steady_train_images_per_second": 344.0763769034892,
+    "wall_seconds": 382.16330491309054
+  },
+  "stream_minus_map_points": -0.23699999999999832,
+  "within_one_point_observed": true,
+  "steady_train_speed_ratio": 1.0007695697069583,
+  "scope": "single-seed subset fine-tuning; not a statistical non-inferiority claim",
+  "timing_note": "Shared GPU; competing qwen_image_2_1_generate observed during stream epoch 7. Both arms have timing outliers; no speedup claim."
+}

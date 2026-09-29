@@ -129,6 +129,8 @@ class ShardPackDetectionTrainer(DetectionTrainer):
                 )
         if not names:
             raise ValueError("names must contain at least one class")
+        if decode_workers < 1:
+            raise ValueError("decode_workers must be positive")
         self.stream_sources = {"train": train_source, "val": val_source}
         self.stream_decoders = {"train": train_decode, "val": val_decode}
         self.stream_names = dict(enumerate(names))
@@ -159,6 +161,8 @@ class ShardPackDetectionTrainer(DetectionTrainer):
             decode=self.stream_decoders[mode],
             batch_size=batch_size,
             decode_workers=self.stream_workers,
+            decode_task_records=max(1, min(8, batch_size // self.stream_workers)),
+            decode_prefetch=max(2 * batch_size, 2 * self.stream_workers),
             pin_memory=self.device.type == "cuda",
             enable_stats=True,
         )
