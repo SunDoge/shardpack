@@ -300,3 +300,6 @@ OpenCV and Torch may create native CPU pools of their own. When they run below
 this loader, cap those inner pools (for example `cv2.setNumThreads(1)` and an
 appropriate `torch.set_num_threads(...)`) to avoid multiplying native threads by
 `decode_workers`. The loader does not mutate process-global library settings.
+
+An experimental [Ultralytics streaming adapter](ultralytics.md) demonstrates real
+YOLO training and validation without a map-style dataset or unpacking images.
