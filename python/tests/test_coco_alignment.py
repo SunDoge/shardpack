@@ -47,6 +47,17 @@ def test_empty_annotations():
     assert decoded["cls"].shape == (0, 1)
 
 
+@pytest.mark.parametrize("budget", ["0", "-1"])
+def test_cache_budget_must_be_positive(monkeypatch, tmp_path, budget):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["benchmark", "stream", "--work", str(tmp_path), "--cache-max-bytes", budget],
+    )
+    with pytest.raises(SystemExit) as error:
+        benchmark.main()
+    assert error.value.code == 2
+
+
 def test_s3_experiment_config_is_scoped_without_serializing_credentials(tmp_path):
     helper_spec = importlib.util.spec_from_file_location(
         "coco_s3_prepare", Path(__file__).parents[1] / "benchmarks" / "coco_s3_prepare.py"

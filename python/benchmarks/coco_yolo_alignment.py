@@ -252,7 +252,7 @@ def run(args):
             shuffle_max_bytes=256 * 1024**2,
             cache_dir=spec["cache_dir"],
             cache_mode="plaintext",
-            cache_max_bytes=8 * 1024**3,
+            cache_max_bytes=args.cache_max_bytes,
             encryption_key_id=spec["encryption_key_id"],
             encryption_key_path=spec["encryption_key_path"],
         )
@@ -426,8 +426,16 @@ def main():
     p.add_argument("--amp", action="store_true", help="enable FP16 AMP (verified after setup)")
     p.add_argument("--run-name", help="unique output prefix; defaults to map/stream")
     p.add_argument("--source-spec", help="private remote source descriptor from coco_s3_prepare.py")
+    p.add_argument(
+        "--cache-max-bytes",
+        type=int,
+        default=8 * 1024**3,
+        help="plaintext cache budget; size above the full training layout for warm epochs",
+    )
     p.add_argument("--timing-note", default="Single sequential pair; not a randomized speed trial")
     args = p.parse_args()
+    if args.cache_max_bytes <= 0:
+        p.error("--cache-max-bytes must be positive")
     cv2.setNumThreads(1)
     torch.set_num_threads(2)
     if args.mode == "prepare":

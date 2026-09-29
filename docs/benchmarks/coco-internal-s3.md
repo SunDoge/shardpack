@@ -1,5 +1,8 @@
 # Internal S3: encrypted streaming training and plaintext cache
 
+For the subsequent complete 118,287-image training run, see
+[full COCO train2017 S3 results](coco-full-internal-s3.md).
+
 2026-09-29, RTX 5080, YOLO11n FP16 AMP, batch 16, 640 images, four decode
 threads, seed 42. Same 8,192 training / 5,000 validation images and three-epoch
 recipe as the [AMP experiment](coco-yolo-amp.md). **Training shards are remote;
