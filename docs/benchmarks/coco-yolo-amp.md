@@ -46,6 +46,36 @@ training arms used the identical archived `yolo11n.pt`. Setup/check/download
 cost is included in total wall time, not epoch throughput. The self-check weight
 was archived as `amp-check-yolo26n.pt` in the experiment directory.
 
+## Follow-up: map-style with AMP
+
+The missing map-style arm was subsequently run with the same initial checkpoint,
+seed, three-epoch schedule, batch size, image size and FP16 AMP setting. Actual
+AMP state was asserted for every epoch; training, validation and best-checkpoint
+reload completed. No additional active GPU process was observed at the checks.
+
+| Metric | Map-style AMP | ShardPack AMP |
+| --- | ---: | ---: |
+| Epoch 2 images/s | 526.44 | 524.64 |
+| Epoch 3 images/s | 549.79 | 541.90 |
+| Epochs 2–3 median images/s | 538.11 | 533.27 |
+| Peak Torch allocated memory (MiB) | 2,362.61 | 2,362.30 |
+| Best-checkpoint mAP50–95 (%) | 34.504 | 34.127 |
+
+ShardPack is **0.9% slower** in this short pair: effectively similar throughput,
+not a demonstrated speed advantage for either loader. Both can supply this AMP
+training workload. These sequential, single-seed, two-steady-epoch measurements
+are not a statistical equivalence test. The short-run mAP gap is −0.377 points;
+do not substitute this for the earlier ten-epoch alignment experiment.
+
+[Map AMP raw result](coco-yolo-amp-map.json) records the matching configuration
+and checkpoint hash. This run emitted an NMS time-limit warning during the
+separate YOLO26n AMP self-check; the AMP check subsequently passed. It was before
+timed training, not during the COCO validation passes. Its self-check weight is
+archived as `amp-check-map-yolo26n.pt` in the experiment directory.
+
+Reproduce the added arm by using `map` instead of `stream` in the AMP command
+below and choosing a fresh run name (the measured run used `amp-check-map-fp16`).
+
 ## Reproduce
 
 Use the existing `torch` and `yolo` uv dependency groups and choose new run names:

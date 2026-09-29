@@ -1,0 +1,88 @@
+{
+  "mode": "map",
+  "ultralytics": "8.4.159",
+  "torch": "2.14.0+cu130",
+  "options": {
+    "mode": "map",
+    "coco": "/data/datasets/coco2017",
+    "work": "/data/datasets/shardpack-yolo-alignment-20260929",
+    "train_count": 8192,
+    "val_count": 5000,
+    "seed": 42,
+    "imgsz": 640,
+    "batch": 16,
+    "workers": 4,
+    "epochs": 3,
+    "device": "0",
+    "model": "/data/datasets/shardpack-yolo-alignment-20260929/yolo11n.pt",
+    "amp": true,
+    "run_name": "amp-check-map-fp16",
+    "timing_note": "Single sequential pair; not a randomized speed trial"
+  },
+  "wall_seconds": 101.43535871198401,
+  "epochs": [
+    {
+      "epoch": 0,
+      "train_seconds": 22.80932545592077,
+      "images_per_second": 359.151348681096,
+      "batches": 512,
+      "amp_enabled": true,
+      "gpu_peak_allocated_mib": 2361.81884765625,
+      "metrics": {
+        "metrics/precision(B)": 0.56474,
+        "metrics/recall(B)": 0.44163,
+        "metrics/mAP50(B)": 0.46024,
+        "metrics/mAP50-95(B)": 0.31229,
+        "val/box_loss": 1.21643,
+        "val/cls_loss": 1.40653,
+        "val/dfl_loss": 1.21778
+      }
+    },
+    {
+      "epoch": 1,
+      "train_seconds": 15.561130178160965,
+      "images_per_second": 526.4399118964341,
+      "batches": 512,
+      "amp_enabled": true,
+      "gpu_peak_allocated_mib": 2362.6123046875,
+      "metrics": {
+        "metrics/precision(B)": 0.59921,
+        "metrics/recall(B)": 0.44725,
+        "metrics/mAP50(B)": 0.47824,
+        "metrics/mAP50-95(B)": 0.32727,
+        "val/box_loss": 1.20266,
+        "val/cls_loss": 1.34318,
+        "val/dfl_loss": 1.21406
+      }
+    },
+    {
+      "epoch": 2,
+      "train_seconds": 14.900306151015684,
+      "images_per_second": 549.7873612108024,
+      "batches": 512,
+      "amp_enabled": true,
+      "gpu_peak_allocated_mib": 2362.29736328125,
+      "metrics": {
+        "metrics/precision(B)": 0.61194,
+        "metrics/recall(B)": 0.47787,
+        "metrics/mAP50(B)": 0.50497,
+        "metrics/mAP50-95(B)": 0.34499,
+        "val/box_loss": 1.1879,
+        "val/cls_loss": 1.27555,
+        "val/dfl_loss": 1.19901
+      }
+    }
+  ],
+  "metrics": {
+    "metrics/precision(B)": 0.61083,
+    "metrics/recall(B)": 0.47867,
+    "metrics/mAP50(B)": 0.50481,
+    "metrics/mAP50-95(B)": 0.34504,
+    "val/box_loss": 1.18794,
+    "val/cls_loss": 1.27566,
+    "val/dfl_loss": 1.19891
+  },
+  "parent_max_rss_mib": 4654.32421875,
+  "best": "/data/datasets/shardpack-yolo-alignment-20260929/runs/amp-check-map-fp16/weights/best.pt",
+  "initial_checkpoint_sha256": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1"
+}
