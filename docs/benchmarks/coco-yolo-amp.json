@@ -1,0 +1,823 @@
+{
+  "summary": {
+    "fp32": {
+      "steady_images_per_second": 352.25511260154747,
+      "peak_allocated_mib": 3988.73681640625,
+      "batch_wait_seconds": [
+        0.18101102695800364,
+        0.14585722796618938
+      ],
+      "epoch_seconds": [
+        23.191401524003595,
+        23.320703006815165
+      ],
+      "best_map50_95": 34.087,
+      "wall_seconds": 113.2974749810528
+    },
+    "fp16": {
+      "steady_images_per_second": 533.2700479334275,
+      "peak_allocated_mib": 2362.30029296875,
+      "batch_wait_seconds": [
+        0.20452211308293045,
+        0.15617429092526436
+      ],
+      "epoch_seconds": [
+        15.614425102015957,
+        15.117263399995863
+      ],
+      "best_map50_95": 34.127,
+      "wall_seconds": 98.37818378279917
+    },
+    "speed_ratio": 1.5138745439207708
+  },
+  "results": {
+    "fp32": {
+      "mode": "stream",
+      "ultralytics": "8.4.159",
+      "torch": "2.14.0+cu130",
+      "options": {
+        "mode": "stream",
+        "coco": "/data/datasets/coco2017",
+        "work": "/data/datasets/shardpack-yolo-alignment-20260929",
+        "train_count": 8192,
+        "val_count": 5000,
+        "seed": 42,
+        "imgsz": 640,
+        "batch": 16,
+        "workers": 4,
+        "epochs": 3,
+        "device": "0",
+        "model": "/data/datasets/shardpack-yolo-alignment-20260929/yolo11n.pt",
+        "amp": false,
+        "run_name": "amp-check-fp32",
+        "timing_note": "Single sequential pair; not a randomized speed trial"
+      },
+      "wall_seconds": 113.2974749810528,
+      "epochs": [
+        {
+          "epoch": 0,
+          "train_seconds": 27.62206456088461,
+          "images_per_second": 296.57450050278385,
+          "batches": 512,
+          "amp_enabled": false,
+          "gpu_peak_allocated_mib": 3973.4765625,
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 27.6211862238124,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.9649284658953547,
+                "mean_seconds": 0.0009589694806712321,
+                "recent_samples": 256,
+                "p50_seconds": 0.00000706501305103302,
+                "p95_seconds": 0.000031669856980443
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 22.040585004957393,
+                "mean_seconds": 0.010762004396951852,
+                "recent_samples": 256,
+                "p50_seconds": 0.010984492022544146,
+                "p95_seconds": 0.013778476975858212
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 0.03160519106313586,
+                "mean_seconds": 0.000015432222198796808,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000015650875866413116,
+                "p95_seconds": 0.000005237990990281105
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 2.0015402322169393,
+                "mean_seconds": 0.00390925826604871,
+                "recent_samples": 256,
+                "p50_seconds": 0.003722251858562231,
+                "p95_seconds": 0.004458192968741059
+              },
+              "batch_wait": {
+                "calls": 1,
+                "items": 1,
+                "total_seconds": 0.2849857150577009,
+                "mean_seconds": 0.2849857150577009,
+                "recent_samples": 1,
+                "p50_seconds": 0.2849857150577009,
+                "p95_seconds": 0.2849857150577009
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.00024672248400747776,
+                "mean_seconds": 4.81879851577105e-7,
+                "recent_samples": 256,
+                "p50_seconds": 4.109460860490799e-7,
+                "p95_seconds": 5.951151251792908e-7
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.29358883667737246,
+                "mean_seconds": 0.0005734156966354931,
+                "recent_samples": 256,
+                "p50_seconds": 0.000015917932614684105,
+                "p95_seconds": 0.00002146093174815178
+              },
+              "batch_backpressure": {
+                "calls": 510,
+                "items": 510,
+                "total_seconds": 23.2286710946355,
+                "mean_seconds": 0.04554641391105,
+                "recent_samples": 256,
+                "p50_seconds": 0.038425379199907184,
+                "p95_seconds": 0.04213908198289573
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 2
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          },
+          "metrics": {
+            "metrics/precision(B)": 0.56981,
+            "metrics/recall(B)": 0.43184,
+            "metrics/mAP50(B)": 0.45321,
+            "metrics/mAP50-95(B)": 0.31058,
+            "val/box_loss": 1.21585,
+            "val/cls_loss": 1.42631,
+            "val/dfl_loss": 1.21645
+          }
+        },
+        {
+          "epoch": 1,
+          "train_seconds": 23.191401524003595,
+          "images_per_second": 353.23436539706773,
+          "batches": 512,
+          "amp_enabled": false,
+          "gpu_peak_allocated_mib": 3988.73681640625,
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 23.190373841905966,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.835150003200397,
+                "mean_seconds": 0.0008956320171793054,
+                "recent_samples": 256,
+                "p50_seconds": 0.000007180031388998032,
+                "p95_seconds": 0.000031627947464585304
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 23.11276380601339,
+                "mean_seconds": 0.011285529202154976,
+                "recent_samples": 256,
+                "p50_seconds": 0.010852830950170755,
+                "p95_seconds": 0.01463387906551361
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 0.033507454907521605,
+                "mean_seconds": 0.000016361061966563284,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000015080440789461136,
+                "p95_seconds": 0.000005176989361643791
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 1.975333282025531,
+                "mean_seconds": 0.003858072816456115,
+                "recent_samples": 256,
+                "p50_seconds": 0.00387574196793139,
+                "p95_seconds": 0.0045973858796060085
+              },
+              "batch_wait": {
+                "calls": 1,
+                "items": 1,
+                "total_seconds": 0.18101102695800364,
+                "mean_seconds": 0.18101102695800364,
+                "recent_samples": 1,
+                "p50_seconds": 0.18101102695800364,
+                "p95_seconds": 0.18101102695800364
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.00020591565407812595,
+                "mean_seconds": 4.0217901187133975e-7,
+                "recent_samples": 256,
+                "p50_seconds": 3.6600977182388306e-7,
+                "p95_seconds": 5.67873939871788e-7
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.1893853524234146,
+                "mean_seconds": 0.0003698932664519816,
+                "recent_samples": 256,
+                "p50_seconds": 0.000016327016055583954,
+                "p95_seconds": 0.000020666979253292084
+              },
+              "batch_backpressure": {
+                "calls": 510,
+                "items": 510,
+                "total_seconds": 18.945722641656175,
+                "mean_seconds": 0.037148475767953285,
+                "recent_samples": 256,
+                "p50_seconds": 0.037804763996973634,
+                "p95_seconds": 0.040448949905112386
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 2
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          },
+          "metrics": {
+            "metrics/precision(B)": 0.58051,
+            "metrics/recall(B)": 0.45519,
+            "metrics/mAP50(B)": 0.47483,
+            "metrics/mAP50-95(B)": 0.32414,
+            "val/box_loss": 1.20307,
+            "val/cls_loss": 1.3621,
+            "val/dfl_loss": 1.21035
+          }
+        },
+        {
+          "epoch": 2,
+          "train_seconds": 23.320703006815165,
+          "images_per_second": 351.27585980602714,
+          "batches": 512,
+          "amp_enabled": false,
+          "gpu_peak_allocated_mib": 3988.7333984375,
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 23.319763073930517,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.730038014240563,
+                "mean_seconds": 0.0008443328522403919,
+                "recent_samples": 256,
+                "p50_seconds": 0.000006919959560036659,
+                "p95_seconds": 0.00003148103132843971
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 22.801098192110658,
+                "mean_seconds": 0.011133348726616532,
+                "recent_samples": 256,
+                "p50_seconds": 0.01190890814177692,
+                "p95_seconds": 0.0150795578956604
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 0.02603981178253889,
+                "mean_seconds": 0.000012714751846942818,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000014200340956449509,
+                "p95_seconds": 0.0000053050462156534195
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 1.9683315774891526,
+                "mean_seconds": 0.003844397612283501,
+                "recent_samples": 256,
+                "p50_seconds": 0.0038350201211869717,
+                "p95_seconds": 0.004485361976549029
+              },
+              "batch_wait": {
+                "calls": 1,
+                "items": 1,
+                "total_seconds": 0.14585722796618938,
+                "mean_seconds": 0.14585722796618938,
+                "recent_samples": 1,
+                "p50_seconds": 0.14585722796618938,
+                "p95_seconds": 0.14585722796618938
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.0002136493567377329,
+                "mean_seconds": 4.1728389987838455e-7,
+                "recent_samples": 256,
+                "p50_seconds": 4.109460860490799e-7,
+                "p95_seconds": 6.060581654310226e-7
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.15450684376992285,
+                "mean_seconds": 0.00030177117923813057,
+                "recent_samples": 256,
+                "p50_seconds": 0.000016786158084869385,
+                "p95_seconds": 0.000021890969946980476
+              },
+              "batch_backpressure": {
+                "calls": 510,
+                "items": 510,
+                "total_seconds": 19.212600874714553,
+                "mean_seconds": 0.03767176642100893,
+                "recent_samples": 256,
+                "p50_seconds": 0.03851666301488876,
+                "p95_seconds": 0.043333853129297495
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 2
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          },
+          "metrics": {
+            "metrics/precision(B)": 0.61885,
+            "metrics/recall(B)": 0.4638,
+            "metrics/mAP50(B)": 0.49695,
+            "metrics/mAP50-95(B)": 0.34084,
+            "val/box_loss": 1.19193,
+            "val/cls_loss": 1.28446,
+            "val/dfl_loss": 1.20311
+          }
+        }
+      ],
+      "metrics": {
+        "metrics/precision(B)": 0.61808,
+        "metrics/recall(B)": 0.46394,
+        "metrics/mAP50(B)": 0.49687,
+        "metrics/mAP50-95(B)": 0.34087,
+        "val/box_loss": 1.192,
+        "val/cls_loss": 1.28457,
+        "val/dfl_loss": 1.20315
+      },
+      "parent_max_rss_mib": 4527.70703125,
+      "best": "/data/datasets/shardpack-yolo-alignment-20260929/runs/amp-check-fp32/weights/best.pt",
+      "initial_checkpoint_sha256": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1"
+    },
+    "fp16": {
+      "mode": "stream",
+      "ultralytics": "8.4.159",
+      "torch": "2.14.0+cu130",
+      "options": {
+        "mode": "stream",
+        "coco": "/data/datasets/coco2017",
+        "work": "/data/datasets/shardpack-yolo-alignment-20260929",
+        "train_count": 8192,
+        "val_count": 5000,
+        "seed": 42,
+        "imgsz": 640,
+        "batch": 16,
+        "workers": 4,
+        "epochs": 3,
+        "device": "0",
+        "model": "/data/datasets/shardpack-yolo-alignment-20260929/yolo11n.pt",
+        "amp": true,
+        "run_name": "amp-check-fp16",
+        "timing_note": "Single sequential pair; not a randomized speed trial"
+      },
+      "wall_seconds": 98.37818378279917,
+      "epochs": [
+        {
+          "epoch": 0,
+          "train_seconds": 24.20372827583924,
+          "images_per_second": 338.46025317419617,
+          "batches": 512,
+          "amp_enabled": true,
+          "gpu_peak_allocated_mib": 2361.81494140625,
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 24.20312479394488,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.5286109659355134,
+                "mean_seconds": 0.0007460278018230909,
+                "recent_samples": 256,
+                "p50_seconds": 0.000007017049938440323,
+                "p95_seconds": 0.000029969029128551483
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 18.53621635073796,
+                "mean_seconds": 0.009050886890008769,
+                "recent_samples": 256,
+                "p50_seconds": 0.009180316934362054,
+                "p95_seconds": 0.011412736028432846
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 0.025634832913056016,
+                "mean_seconds": 0.000012517008258328133,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000014470424503087997,
+                "p95_seconds": 0.000005071982741355896
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 1.8960699706804007,
+                "mean_seconds": 0.0037032616614851577,
+                "recent_samples": 256,
+                "p50_seconds": 0.0035061619710177183,
+                "p95_seconds": 0.004208768950775266
+              },
+              "batch_wait": {
+                "calls": 1,
+                "items": 1,
+                "total_seconds": 0.19977551396004856,
+                "mean_seconds": 0.19977551396004856,
+                "recent_samples": 1,
+                "p50_seconds": 0.19977551396004856,
+                "p95_seconds": 0.19977551396004856
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.00020042969845235348,
+                "mean_seconds": 3.914642547897529e-7,
+                "recent_samples": 256,
+                "p50_seconds": 3.641471266746521e-7,
+                "p95_seconds": 5.490146577358246e-7
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.2075096284970641,
+                "mean_seconds": 0.00040529224315832835,
+                "recent_samples": 256,
+                "p50_seconds": 0.000014188932254910469,
+                "p95_seconds": 0.00001866486854851246
+              },
+              "batch_backpressure": {
+                "calls": 510,
+                "items": 510,
+                "total_seconds": 20.4578701837454,
+                "mean_seconds": 0.04011347094852039,
+                "recent_samples": 256,
+                "p50_seconds": 0.02209332399070263,
+                "p95_seconds": 0.027077917009592056
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 2
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          },
+          "metrics": {
+            "metrics/precision(B)": 0.5793,
+            "metrics/recall(B)": 0.43702,
+            "metrics/mAP50(B)": 0.45807,
+            "metrics/mAP50-95(B)": 0.31224,
+            "val/box_loss": 1.21009,
+            "val/cls_loss": 1.4247,
+            "val/dfl_loss": 1.21309
+          }
+        },
+        {
+          "epoch": 1,
+          "train_seconds": 15.614425102015957,
+          "images_per_second": 524.6430750077594,
+          "batches": 512,
+          "amp_enabled": true,
+          "gpu_peak_allocated_mib": 2362.29931640625,
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 15.613491096999496,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.763668681960553,
+                "mean_seconds": 0.0008607460624502454,
+                "recent_samples": 256,
+                "p50_seconds": 0.000007335096597671509,
+                "p95_seconds": 0.00003182212822139263
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 19.299843837041408,
+                "mean_seconds": 0.009423751873555375,
+                "recent_samples": 256,
+                "p50_seconds": 0.008919669082388282,
+                "p95_seconds": 0.011770593002438545
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 0.031953359954059124,
+                "mean_seconds": 0.00001560222654006793,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000015760306268930435,
+                "p95_seconds": 0.00000513298436999321
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 1.8729121580254287,
+                "mean_seconds": 0.0036580315586434153,
+                "recent_samples": 256,
+                "p50_seconds": 0.003600419033318758,
+                "p95_seconds": 0.004477930022403598
+              },
+              "batch_wait": {
+                "calls": 1,
+                "items": 1,
+                "total_seconds": 0.20452211308293045,
+                "mean_seconds": 0.20452211308293045,
+                "recent_samples": 1,
+                "p50_seconds": 0.20452211308293045,
+                "p95_seconds": 0.20452211308293045
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.00019646598957479,
+                "mean_seconds": 3.837226358882617e-7,
+                "recent_samples": 256,
+                "p50_seconds": 3.6694109439849854e-7,
+                "p95_seconds": 4.891771823167801e-7
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.21240698569454253,
+                "mean_seconds": 0.0004148573939346534,
+                "recent_samples": 256,
+                "p50_seconds": 0.00001588696613907814,
+                "p95_seconds": 0.00001871190033853054
+              },
+              "batch_backpressure": {
+                "calls": 510,
+                "items": 510,
+                "total_seconds": 11.631289466982707,
+                "mean_seconds": 0.02280644993526021,
+                "recent_samples": 256,
+                "p50_seconds": 0.02346786903217435,
+                "p95_seconds": 0.0269677781034261
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 2
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          },
+          "metrics": {
+            "metrics/precision(B)": 0.58138,
+            "metrics/recall(B)": 0.44756,
+            "metrics/mAP50(B)": 0.46853,
+            "metrics/mAP50-95(B)": 0.31863,
+            "val/box_loss": 1.21469,
+            "val/cls_loss": 1.37276,
+            "val/dfl_loss": 1.21556
+          }
+        },
+        {
+          "epoch": 2,
+          "train_seconds": 15.117263399995863,
+          "images_per_second": 541.8970208590955,
+          "batches": 512,
+          "amp_enabled": true,
+          "gpu_peak_allocated_mib": 2362.30029296875,
+          "loader": {
+            "enabled": true,
+            "status": "completed",
+            "elapsed_seconds": 15.116309096803889,
+            "batches_delivered": 512,
+            "timings": {
+              "source": {
+                "calls": 2049,
+                "items": 8192,
+                "total_seconds": 1.5383092439733446,
+                "mean_seconds": 0.0007507609780250583,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000067870132625103,
+                "p95_seconds": 0.000030700117349624634
+              },
+              "decode": {
+                "calls": 2048,
+                "items": 8192,
+                "total_seconds": 18.368666666327044,
+                "mean_seconds": 0.008969075520667502,
+                "recent_samples": 256,
+                "p50_seconds": 0.009144509909674525,
+                "p95_seconds": 0.012231814209371805
+              },
+              "decode_result_wait": {
+                "calls": 2048,
+                "items": 2048,
+                "total_seconds": 0.023014053935185075,
+                "mean_seconds": 0.000011237331023039587,
+                "recent_samples": 256,
+                "p50_seconds": 0.0000012777745723724365,
+                "p95_seconds": 0.000004658941179513931
+              },
+              "collate": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 1.9383965216111392,
+                "mean_seconds": 0.003785930706271756,
+                "recent_samples": 256,
+                "p50_seconds": 0.0036467770114541054,
+                "p95_seconds": 0.004493240965530276
+              },
+              "batch_wait": {
+                "calls": 1,
+                "items": 1,
+                "total_seconds": 0.15617429092526436,
+                "mean_seconds": 0.15617429092526436,
+                "recent_samples": 1,
+                "p50_seconds": 0.15617429092526436,
+                "p95_seconds": 0.15617429092526436
+              },
+              "consumer": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.00020405976101756096,
+                "mean_seconds": 3.9855422073742375e-7,
+                "recent_samples": 256,
+                "p50_seconds": 3.708992153406143e-7,
+                "p95_seconds": 5.909241735935211e-7
+              },
+              "batch_delivery": {
+                "calls": 512,
+                "items": 512,
+                "total_seconds": 0.16416507051326334,
+                "mean_seconds": 0.00032063490334621747,
+                "recent_samples": 256,
+                "p50_seconds": 0.000015625962987542152,
+                "p95_seconds": 0.000022342894226312637
+              },
+              "batch_backpressure": {
+                "calls": 510,
+                "items": 510,
+                "total_seconds": 11.304807625245303,
+                "mean_seconds": 0.0221662894612653,
+                "recent_samples": 256,
+                "p50_seconds": 0.02258269186131656,
+                "p95_seconds": 0.029995413031429052
+              }
+            },
+            "queues": {
+              "decode_inflight_records": {
+                "current": 0,
+                "peak": 32
+              },
+              "batch_queue": {
+                "current": 0,
+                "peak": 2
+              }
+            },
+            "source": {
+              "records_read": 8192,
+              "encoded_bytes_read": 1338308186,
+              "shards_completed": 10,
+              "shard_bytes_completed": 1338559258,
+              "shards_verified": 10,
+              "shard_bytes_verified": 1338559258,
+              "prefetched_shards": 10,
+              "retries": 0,
+              "checksum_failures": 0,
+              "queue_backpressure_events": 0
+            }
+          },
+          "metrics": {
+            "metrics/precision(B)": 0.61306,
+            "metrics/recall(B)": 0.46421,
+            "metrics/mAP50(B)": 0.49854,
+            "metrics/mAP50-95(B)": 0.34118,
+            "val/box_loss": 1.19474,
+            "val/cls_loss": 1.28942,
+            "val/dfl_loss": 1.20465
+          }
+        }
+      ],
+      "metrics": {
+        "metrics/precision(B)": 0.61351,
+        "metrics/recall(B)": 0.46435,
+        "metrics/mAP50(B)": 0.49874,
+        "metrics/mAP50-95(B)": 0.34127,
+        "val/box_loss": 1.19486,
+        "val/cls_loss": 1.2895,
+        "val/dfl_loss": 1.20463
+      },
+      "parent_max_rss_mib": 5073.76171875,
+      "best": "/data/datasets/shardpack-yolo-alignment-20260929/runs/amp-check-fp16/weights/best.pt",
+      "initial_checkpoint_sha256": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1"
+    }
+  }
+}

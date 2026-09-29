@@ -131,3 +131,6 @@ criterion: an acceptable metric gap does not prove a speedup.
 Follow-up: [targeted cold-cache loader startup](coco-cold-loader.md) measures
 loader-only cold/warm performance and verifies block-storage reads via Linux
 process I/O counters.
+
+Follow-up: [FP32 vs FP16 AMP](coco-yolo-amp.md) measures the training-side
+throughput/allocated-memory change while retaining the same ShardPack loader.

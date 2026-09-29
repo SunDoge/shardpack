@@ -209,6 +209,14 @@ def verify(args, manifest):
 def run(args):
     import ultralytics
 
+    run_name = args.run_name or args.mode
+    if Path(run_name).name != run_name or run_name in {".", ".."}:
+        raise ValueError("run-name must be a single filename component")
+    if (
+        any((args.work / f"{run_name}-{suffix}.json").exists() for suffix in ("epochs", "result"))
+        or (args.work / "runs" / run_name).exists()
+    ):
+        raise ValueError("run already exists; choose a new --run-name")
     manifest = json.loads((args.work / "experiment.json").read_text())
     decode = Decode(args.imgsz)
     sources = {
@@ -240,7 +248,7 @@ def run(args):
             "batch": args.batch,
             "imgsz": args.imgsz,
             "seed": args.seed,
-            "amp": False,
+            "amp": args.amp,
             "deterministic": True,
             "optimizer": "AdamW",
             "lr0": 0.0001,
@@ -250,7 +258,7 @@ def run(args):
             "patience": 0,
             "workers": args.workers,
             "project": str(args.work / "runs"),
-            "name": args.mode,
+            "name": run_name,
             "exist_ok": False,
         },
     )
@@ -263,6 +271,8 @@ def run(args):
     epochs = []
 
     def begin(t):
+        if bool(t.amp) != args.amp:
+            raise RuntimeError("resolved AMP mode differs from requested mode")
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
@@ -283,6 +293,7 @@ def run(args):
                 "train_seconds": seconds,
                 "images_per_second": len(manifest["splits"]["train"]["rows"]) / seconds,
                 "batches": state["count"],
+                "amp_enabled": bool(t.amp),
                 "gpu_peak_allocated_mib": torch.cuda.max_memory_allocated() / 1024**2
                 if torch.cuda.is_available()
                 else 0,
@@ -296,7 +307,7 @@ def run(args):
 
     def fit_end(t):
         epochs[-1]["metrics"] = {k: float(v) for k, v in t.metrics.items()}
-        (args.work / f"{args.mode}-epochs.json").write_text(json.dumps(epochs, indent=2))
+        (args.work / f"{run_name}-epochs.json").write_text(json.dumps(epochs, indent=2))
 
     trainer.add_callback("on_train_epoch_start", begin)
     trainer.add_callback("on_train_batch_end", batch)
@@ -319,7 +330,7 @@ def run(args):
         result["initial_checkpoint_sha256"] = hashlib.sha256(
             Path(args.model).read_bytes()
         ).hexdigest()
-    (args.work / f"{args.mode}-result.json").write_text(json.dumps(result, indent=2))
+    (args.work / f"{run_name}-result.json").write_text(json.dumps(result, indent=2))
     print("ALIGNMENT_RESULT " + json.dumps(result), flush=True)
 
 
@@ -330,6 +341,9 @@ def compare(args):
     }
     for key in ("seed", "imgsz", "batch", "epochs", "workers"):
         assert results["map"]["options"][key] == results["stream"]["options"][key], key
+    assert results["map"]["options"].get("amp", False) == results["stream"]["options"].get(
+        "amp", False
+    ), "amp"
     assert (
         results["map"]["initial_checkpoint_sha256"]
         == results["stream"]["initial_checkpoint_sha256"]
@@ -374,6 +388,8 @@ def main():
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--device", default="0")
     p.add_argument("--model", default="yolo11n.pt")
+    p.add_argument("--amp", action="store_true", help="enable FP16 AMP (verified after setup)")
+    p.add_argument("--run-name", help="unique output prefix; defaults to map/stream")
     p.add_argument("--timing-note", default="Single sequential pair; not a randomized speed trial")
     args = p.parse_args()
     cv2.setNumThreads(1)
