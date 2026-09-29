@@ -824,6 +824,27 @@ impl PyRecordLoader {
     }
 
     fn metrics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.metrics_handle().snapshot(py)
+    }
+
+    fn metrics_handle(&self) -> PyLoaderMetrics {
+        PyLoaderMetrics {
+            metrics: self.metrics.clone(),
+            cache_metrics: self.cache_metrics.clone(),
+        }
+    }
+}
+
+/// Share only atomic counters, never the thread-affine reader or its runtime.
+#[pyclass(frozen, module = "shardpack._native", name = "LoaderMetrics")]
+struct PyLoaderMetrics {
+    metrics: RuntimeMetrics,
+    cache_metrics: Option<CacheMetrics>,
+}
+
+#[pymethods]
+impl PyLoaderMetrics {
+    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let metrics = self.metrics.snapshot();
         let result = PyDict::new(py);
         result.set_item("records_read", metrics.records_read)?;
@@ -939,6 +960,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDatasetWriter>()?;
     module.add_class::<PyRecord>()?;
     module.add_class::<PyRecordLoader>()?;
+    module.add_class::<PyLoaderMetrics>()?;
     module.add_class::<PyEpochScheduler>()?;
     module.add_class::<PySamplePool>()?;
     module.add_function(wrap_pyfunction!(cli_main, module)?)?;

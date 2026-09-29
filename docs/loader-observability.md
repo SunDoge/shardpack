@@ -25,6 +25,14 @@ print(source.stats())  # native counters, also available without loader timing
 Collect on every distributed rank; rank 0 alone can hide an input straggler.
 Counters contain no payloads, keys or credentials.
 
+Live source counters use a shareable native `LoaderMetrics` handle backed by
+atomic counters. Polling `source.stats()` or `loader.stats()` from the training
+thread is safe while the producer is reading. The underlying `RecordLoader`
+itself remains thread-affine: do not move it across threads. Direct native users
+can obtain `records.metrics_handle()` on the reader's thread, then call the
+handle's `snapshot()` from other threads or after the reader is dropped.
+Fields are sampled independently, not as one atomic transaction.
+
 ## Snapshot contract
 
 - Disabled: `{"enabled": false}`. No instrumentation clocks or locks are used.

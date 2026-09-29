@@ -102,13 +102,13 @@ class ShardPackSource:
         self.encryption_key_path = (
             None if encryption_key_path is None else os.fspath(encryption_key_path)
         )
-        self._record_loader: Any = None
+        self._metrics_handle: Any = None
         self._last_metrics: dict[str, int] = {}
 
     def stats(self) -> dict[str, int]:
         """Native counters for the latest started epoch (also retained at EOF)."""
-        loader = self._record_loader
-        return loader.metrics() if loader is not None else dict(self._last_metrics)
+        handle = self._metrics_handle
+        return handle.snapshot() if handle is not None else dict(self._last_metrics)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -150,14 +150,15 @@ class ShardPackSource:
             encryption_key=self.encryption_key,
             encryption_key_path=self.encryption_key_path,
         )
-        self._record_loader = records
+        handle = records.metrics_handle()
+        self._metrics_handle = handle
         self._last_metrics = {}
         try:
             yield from records
         finally:
-            if self._record_loader is records:
+            if self._metrics_handle is handle:
                 self._last_metrics = records.metrics()
-                self._record_loader = None
+                self._metrics_handle = None
 
 
 class ThreadedLoader:

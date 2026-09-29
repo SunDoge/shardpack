@@ -9,6 +9,60 @@ import shardpack
 DATA = Path(__file__).parent / "data"
 
 
+def test_live_source_metrics_are_safe_from_decode_and_consumer_threads(tmp_path):
+    source = shardpack.ShardPackSource(
+        (DATA / "layout-key.txt").read_text().strip(),
+        config={
+            "default_store": "local",
+            "stores": {"local": {"type": "filesystem", "root": DATA}},
+        },
+        cache_dir=tmp_path / "cache",
+    )
+    snapshots = []
+
+    def decode(record):
+        # One-record prefetch keeps the native iterator alive on the producer.
+        assert source._metrics_handle is not None
+        snapshot = source.stats()
+        assert snapshot["records_read"] >= 1
+        assert "cache_misses" in snapshot
+        snapshots.append(snapshot)
+        return record.sample_id
+
+    loader = shardpack.ThreadedLoader(
+        source,
+        decode=decode,
+        decode_workers=1,
+        decode_prefetch=1,
+        decode_task_records=1,
+        batch_size=1,
+        prefetch_batches=1,
+        enable_stats=True,
+    )
+    count = 0
+    for _ in loader:
+        assert loader.stats()["source"]["records_read"] >= 1
+        count += 1
+    assert count == len(snapshots) == 7
+    assert source.stats()["records_read"] == 7
+
+
+def test_native_metrics_handle_outlives_reader_and_is_sendable():
+    from concurrent.futures import ThreadPoolExecutor
+
+    dataset = shardpack.Dataset(
+        (DATA / "layout-key.txt").read_text().strip(),
+        config={"stores": {"local": {"type": "filesystem", "root": DATA}}},
+    )
+    reader = dataset.records()
+    handle = reader.metrics_handle()
+    with ThreadPoolExecutor(1) as pool:
+        assert pool.submit(handle.snapshot).result()["records_read"] == 0
+        assert len(list(reader)) == 7
+        del reader
+        assert pool.submit(handle.snapshot).result()["records_read"] == 7
+
+
 def test_config_and_config_path_are_mutually_exclusive(tmp_path: Path) -> None:
     config = {"stores": {"local": {"type": "filesystem", "root": tmp_path}}}
     with pytest.raises(ValueError, match="exactly one"):
