@@ -45,3 +45,24 @@ def test_empty_annotations():
     assert decoded["img"].shape == (3, 64, 64)
     assert decoded["bboxes"].shape == (0, 4)
     assert decoded["cls"].shape == (0, 1)
+
+
+def test_s3_experiment_config_is_scoped_without_serializing_credentials(tmp_path):
+    helper_spec = importlib.util.spec_from_file_location(
+        "coco_s3_prepare", Path(__file__).parents[1] / "benchmarks" / "coco_s3_prepare.py"
+    )
+    helper = importlib.util.module_from_spec(helper_spec)
+    helper_spec.loader.exec_module(helper)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[stores.internal]\ntype="s3"\nbucket="test"\nroot="base/"\n')
+    spec = {
+        "config_path": str(config_path),
+        "store": "internal",
+        "root_suffix": "experiments/coco-s3-test",
+    }
+    result = helper.scoped_config(spec)
+    assert result["stores"]["internal"]["root"] == "base/experiments/coco-s3-test"
+    assert 'root="base/"' in config_path.read_text()
+    for suffix in ("", "existing-data", "experiments/coco-s3-test/../existing-data"):
+        with pytest.raises(ValueError):
+            helper.scoped_config(spec | {"root_suffix": suffix})

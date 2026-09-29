@@ -233,6 +233,29 @@ def run(args):
         )
         for split, info in manifest["splits"].items()
     }
+    if args.source_spec:
+        from coco_s3_prepare import scoped_config
+
+        if args.mode != "stream":
+            raise ValueError("remote source spec requires stream mode")
+        spec = json.loads(Path(args.source_spec).read_text())
+        if spec["state"] != "ready":
+            raise ValueError("remote source is not ready")
+        sources["train"] = ShardPackSource(
+            spec["train_layout"],
+            config=scoped_config(spec),
+            rank=0,
+            world_size=1,
+            shard_seed=args.seed,
+            shuffle_seed=args.seed,
+            shuffle_max_records=1024,
+            shuffle_max_bytes=256 * 1024**2,
+            cache_dir=spec["cache_dir"],
+            cache_mode="plaintext",
+            cache_max_bytes=8 * 1024**3,
+            encryption_key_id=spec["encryption_key_id"],
+            encryption_key_path=spec["encryption_key_path"],
+        )
     trainer_type = MapTrainer if args.mode == "map" else ShardPackDetectionTrainer
     trainer = trainer_type(
         train_source=sources["train"],
@@ -271,12 +294,21 @@ def run(args):
     epochs = []
 
     def begin(t):
+        if t.batch_size != args.batch:
+            raise RuntimeError("trainer changed batch size (e.g. OOM recovery); trial is invalid")
         if bool(t.amp) != args.amp:
             raise RuntimeError("resolved AMP mode differs from requested mode")
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
         state.update(start=time.perf_counter(), count=0, pinned=True)
+
+    def batch_start(t):
+        if state["count"] == 0:
+            state["first_batch_seconds"] = time.perf_counter() - state["start"]
+            state["first_batch_source"] = (
+                t.train_loader.stats().get("source", {}) if args.mode == "stream" else {}
+            )
 
     def batch(t):
         state["count"] += 1
@@ -294,6 +326,8 @@ def run(args):
                 "images_per_second": len(manifest["splits"]["train"]["rows"]) / seconds,
                 "batches": state["count"],
                 "amp_enabled": bool(t.amp),
+                "first_batch_seconds": state["first_batch_seconds"],
+                "first_batch_source": state["first_batch_source"],
                 "gpu_peak_allocated_mib": torch.cuda.max_memory_allocated() / 1024**2
                 if torch.cuda.is_available()
                 else 0,
@@ -310,6 +344,7 @@ def run(args):
         (args.work / f"{run_name}-epochs.json").write_text(json.dumps(epochs, indent=2))
 
     trainer.add_callback("on_train_epoch_start", begin)
+    trainer.add_callback("on_train_batch_start", batch_start)
     trainer.add_callback("on_train_batch_end", batch)
     trainer.add_callback("on_train_epoch_end", end)
     trainer.add_callback("on_fit_epoch_end", fit_end)
@@ -390,6 +425,7 @@ def main():
     p.add_argument("--model", default="yolo11n.pt")
     p.add_argument("--amp", action="store_true", help="enable FP16 AMP (verified after setup)")
     p.add_argument("--run-name", help="unique output prefix; defaults to map/stream")
+    p.add_argument("--source-spec", help="private remote source descriptor from coco_s3_prepare.py")
     p.add_argument("--timing-note", default="Single sequential pair; not a randomized speed trial")
     args = p.parse_args()
     cv2.setNumThreads(1)

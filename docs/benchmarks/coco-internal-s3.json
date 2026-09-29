@@ -1,0 +1,476 @@
+{
+  "mode": "stream",
+  "ultralytics": "8.4.159",
+  "torch": "2.14.0+cu130",
+  "options": {
+    "mode": "stream",
+    "coco": "/data/datasets/coco2017",
+    "work": "/data/datasets/shardpack-yolo-alignment-20260929",
+    "train_count": 8192,
+    "val_count": 5000,
+    "seed": 42,
+    "imgsz": 640,
+    "batch": 16,
+    "workers": 4,
+    "epochs": 3,
+    "device": "0",
+    "model": "/data/datasets/shardpack-yolo-alignment-20260929/yolo11n.pt",
+    "amp": true,
+    "run_name": "internal-s3-amp-final",
+    "source_spec": "/data/datasets/shardpack-yolo-alignment-20260929/coco-s3-8c7d66a22473449dbe0051f4acec5d3f/source-final.json",
+    "timing_note": "Single sequential pair; not a randomized speed trial"
+  },
+  "wall_seconds": 118.41141314990819,
+  "epochs": [
+    {
+      "epoch": 0,
+      "train_seconds": 46.77226854301989,
+      "images_per_second": 175.14651855009376,
+      "batches": 512,
+      "amp_enabled": true,
+      "first_batch_seconds": 5.451246755197644,
+      "first_batch_source": {
+        "records_read": 1071,
+        "encoded_bytes_read": 175270542,
+        "shards_completed": 1,
+        "shard_bytes_completed": 134192577,
+        "shards_verified": 0,
+        "shard_bytes_verified": 0,
+        "prefetched_shards": 2,
+        "retries": 0,
+        "checksum_failures": 0,
+        "queue_backpressure_events": 0,
+        "cache_hits": 0,
+        "cache_misses": 4,
+        "cache_downloaded_bytes": 232445707,
+        "cache_corrupt_entries": 0,
+        "cache_evicted_entries": 0,
+        "cache_evicted_bytes": 0,
+        "cache_stale_partials_removed": 0
+      },
+      "gpu_peak_allocated_mib": 2361.81787109375,
+      "loader": {
+        "enabled": true,
+        "status": "completed",
+        "elapsed_seconds": 46.77163125295192,
+        "batches_delivered": 512,
+        "timings": {
+          "source": {
+            "calls": 2049,
+            "items": 8192,
+            "total_seconds": 33.60686220158823,
+            "mean_seconds": 0.01640159209447937,
+            "recent_samples": 256,
+            "p50_seconds": 0.000002234010025858879,
+            "p95_seconds": 0.000007996102795004845
+          },
+          "decode": {
+            "calls": 2048,
+            "items": 8192,
+            "total_seconds": 21.076712179696187,
+            "mean_seconds": 0.010291363368992279,
+            "recent_samples": 256,
+            "p50_seconds": 0.009500617161393166,
+            "p95_seconds": 0.011521223932504654
+          },
+          "decode_result_wait": {
+            "calls": 2048,
+            "items": 2048,
+            "total_seconds": 0.07958587282337248,
+            "mean_seconds": 0.000038860289464537345,
+            "recent_samples": 256,
+            "p50_seconds": 0.000001583946868777275,
+            "p95_seconds": 0.000005098059773445129
+          },
+          "collate": {
+            "calls": 512,
+            "items": 512,
+            "total_seconds": 2.039769259514287,
+            "mean_seconds": 0.003983924334988842,
+            "recent_samples": 256,
+            "p50_seconds": 0.0037634740583598614,
+            "p95_seconds": 0.005007945001125336
+          },
+          "batch_wait": {
+            "calls": 211,
+            "items": 211,
+            "total_seconds": 23.3065464401152,
+            "mean_seconds": 0.11045756606689668,
+            "recent_samples": 211,
+            "p50_seconds": 0.08029645006172359,
+            "p95_seconds": 0.14906120602972806
+          },
+          "consumer": {
+            "calls": 512,
+            "items": 512,
+            "total_seconds": 0.0003071492537856102,
+            "mean_seconds": 5.999008863000199e-7,
+            "recent_samples": 256,
+            "p50_seconds": 4.800967872142792e-7,
+            "p95_seconds": 0.0000010528601706027985
+          },
+          "batch_delivery": {
+            "calls": 512,
+            "items": 512,
+            "total_seconds": 23.31563002243638,
+            "mean_seconds": 0.045538339887571055,
+            "recent_samples": 256,
+            "p50_seconds": 0.000016340985894203186,
+            "p95_seconds": 0.11595831601880491
+          },
+          "batch_backpressure": {
+            "calls": 155,
+            "items": 155,
+            "total_seconds": 10.753505683271214,
+            "mean_seconds": 0.06937745602110461,
+            "recent_samples": 155,
+            "p50_seconds": 0.02462126314640045,
+            "p95_seconds": 0.02814277890138328
+          }
+        },
+        "queues": {
+          "decode_inflight_records": {
+            "current": 0,
+            "peak": 32
+          },
+          "batch_queue": {
+            "current": 0,
+            "peak": 2
+          }
+        },
+        "source": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 0,
+          "cache_misses": 10,
+          "cache_downloaded_bytes": 1338564602,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      },
+      "metrics": {
+        "metrics/precision(B)": 0.57628,
+        "metrics/recall(B)": 0.42203,
+        "metrics/mAP50(B)": 0.44777,
+        "metrics/mAP50-95(B)": 0.30501,
+        "val/box_loss": 1.21107,
+        "val/cls_loss": 1.4378,
+        "val/dfl_loss": 1.22157
+      }
+    },
+    {
+      "epoch": 1,
+      "train_seconds": 15.834804513957351,
+      "images_per_second": 517.3414040431812,
+      "batches": 512,
+      "amp_enabled": true,
+      "first_batch_seconds": 0.35022505605593324,
+      "first_batch_source": {
+        "records_read": 1071,
+        "encoded_bytes_read": 175270542,
+        "shards_completed": 1,
+        "shard_bytes_completed": 134192577,
+        "shards_verified": 0,
+        "shard_bytes_verified": 0,
+        "prefetched_shards": 2,
+        "retries": 0,
+        "checksum_failures": 0,
+        "queue_backpressure_events": 0,
+        "cache_hits": 4,
+        "cache_misses": 0,
+        "cache_downloaded_bytes": 0,
+        "cache_corrupt_entries": 0,
+        "cache_evicted_entries": 0,
+        "cache_evicted_bytes": 0,
+        "cache_stale_partials_removed": 0
+      },
+      "gpu_peak_allocated_mib": 2362.61376953125,
+      "loader": {
+        "enabled": true,
+        "status": "completed",
+        "elapsed_seconds": 15.833956879097968,
+        "batches_delivered": 512,
+        "timings": {
+          "source": {
+            "calls": 2049,
+            "items": 8192,
+            "total_seconds": 1.4281563521362841,
+            "mean_seconds": 0.0006970016359864735,
+            "recent_samples": 256,
+            "p50_seconds": 0.000002085929736495018,
+            "p95_seconds": 0.00000809691846370697
+          },
+          "decode": {
+            "calls": 2048,
+            "items": 8192,
+            "total_seconds": 19.448455752339214,
+            "mean_seconds": 0.009496316285321882,
+            "recent_samples": 256,
+            "p50_seconds": 0.009115148801356554,
+            "p95_seconds": 0.011404477059841156
+          },
+          "decode_result_wait": {
+            "calls": 2048,
+            "items": 2048,
+            "total_seconds": 0.02944565750658512,
+            "mean_seconds": 0.000014377762454387266,
+            "recent_samples": 256,
+            "p50_seconds": 0.0000013529788702726364,
+            "p95_seconds": 0.000004979083314538002
+          },
+          "collate": {
+            "calls": 512,
+            "items": 512,
+            "total_seconds": 1.965518785873428,
+            "mean_seconds": 0.003838903878659039,
+            "recent_samples": 256,
+            "p50_seconds": 0.0036782920360565186,
+            "p95_seconds": 0.004437132040038705
+          },
+          "batch_wait": {
+            "calls": 1,
+            "items": 1,
+            "total_seconds": 0.3487473449204117,
+            "mean_seconds": 0.3487473449204117,
+            "recent_samples": 1,
+            "p50_seconds": 0.3487473449204117,
+            "p95_seconds": 0.3487473449204117
+          },
+          "consumer": {
+            "calls": 512,
+            "items": 512,
+            "total_seconds": 0.00021310290321707726,
+            "mean_seconds": 4.16216607845854e-7,
+            "recent_samples": 256,
+            "p50_seconds": 4.0605664253234863e-7,
+            "p95_seconds": 5.338806658983231e-7
+          },
+          "batch_delivery": {
+            "calls": 512,
+            "items": 512,
+            "total_seconds": 0.3566692494787276,
+            "mean_seconds": 0.0006966196278881398,
+            "recent_samples": 256,
+            "p50_seconds": 0.00001560593955218792,
+            "p95_seconds": 0.000019863015040755272
+          },
+          "batch_backpressure": {
+            "calls": 510,
+            "items": 510,
+            "total_seconds": 12.104360237251967,
+            "mean_seconds": 0.02373403968088621,
+            "recent_samples": 256,
+            "p50_seconds": 0.023783612065017223,
+            "p95_seconds": 0.02709981193765998
+          }
+        },
+        "queues": {
+          "decode_inflight_records": {
+            "current": 0,
+            "peak": 32
+          },
+          "batch_queue": {
+            "current": 0,
+            "peak": 2
+          }
+        },
+        "source": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 10,
+          "cache_misses": 0,
+          "cache_downloaded_bytes": 0,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      },
+      "metrics": {
+        "metrics/precision(B)": 0.57402,
+        "metrics/recall(B)": 0.46223,
+        "metrics/mAP50(B)": 0.47249,
+        "metrics/mAP50-95(B)": 0.32276,
+        "val/box_loss": 1.20707,
+        "val/cls_loss": 1.35006,
+        "val/dfl_loss": 1.21349
+      }
+    },
+    {
+      "epoch": 2,
+      "train_seconds": 14.527935680001974,
+      "images_per_second": 563.87914845166,
+      "batches": 512,
+      "amp_enabled": true,
+      "first_batch_seconds": 0.3551875241100788,
+      "first_batch_source": {
+        "records_read": 1071,
+        "encoded_bytes_read": 175270542,
+        "shards_completed": 1,
+        "shard_bytes_completed": 134192577,
+        "shards_verified": 0,
+        "shard_bytes_verified": 0,
+        "prefetched_shards": 2,
+        "retries": 0,
+        "checksum_failures": 0,
+        "queue_backpressure_events": 0,
+        "cache_hits": 4,
+        "cache_misses": 0,
+        "cache_downloaded_bytes": 0,
+        "cache_corrupt_entries": 0,
+        "cache_evicted_entries": 0,
+        "cache_evicted_bytes": 0,
+        "cache_stale_partials_removed": 0
+      },
+      "gpu_peak_allocated_mib": 2362.56640625,
+      "loader": {
+        "enabled": true,
+        "status": "completed",
+        "elapsed_seconds": 14.526971993036568,
+        "batches_delivered": 512,
+        "timings": {
+          "source": {
+            "calls": 2049,
+            "items": 8192,
+            "total_seconds": 1.3004826025571674,
+            "mean_seconds": 0.0006346913628878318,
+            "recent_samples": 256,
+            "p50_seconds": 0.0000022239983081817627,
+            "p95_seconds": 0.000007925089448690414
+          },
+          "decode": {
+            "calls": 2048,
+            "items": 8192,
+            "total_seconds": 18.91814808221534,
+            "mean_seconds": 0.009237376993269208,
+            "recent_samples": 256,
+            "p50_seconds": 0.009693610947579145,
+            "p95_seconds": 0.011576005024835467
+          },
+          "decode_result_wait": {
+            "calls": 2048,
+            "items": 2048,
+            "total_seconds": 0.0315781740937382,
+            "mean_seconds": 0.000015419030319208105,
+            "recent_samples": 256,
+            "p50_seconds": 0.0000014381948858499527,
+            "p95_seconds": 0.000005075940862298012
+          },
+          "collate": {
+            "calls": 512,
+            "items": 512,
+            "total_seconds": 1.9010347027797252,
+            "mean_seconds": 0.0037129584038666508,
+            "recent_samples": 256,
+            "p50_seconds": 0.0036678609903901815,
+            "p95_seconds": 0.004410172812640667
+          },
+          "batch_wait": {
+            "calls": 1,
+            "items": 1,
+            "total_seconds": 0.35108191682957113,
+            "mean_seconds": 0.35108191682957113,
+            "recent_samples": 1,
+            "p50_seconds": 0.35108191682957113,
+            "p95_seconds": 0.35108191682957113
+          },
+          "consumer": {
+            "calls": 512,
+            "items": 512,
+            "total_seconds": 0.000211033271625638,
+            "mean_seconds": 4.1217435864382423e-7,
+            "recent_samples": 256,
+            "p50_seconds": 3.948807716369629e-7,
+            "p95_seconds": 5.539041012525558e-7
+          },
+          "batch_delivery": {
+            "calls": 512,
+            "items": 512,
+            "total_seconds": 0.3586460363585502,
+            "mean_seconds": 0.0007004805397627933,
+            "recent_samples": 256,
+            "p50_seconds": 0.000015154946595430374,
+            "p95_seconds": 0.00001878105103969574
+          },
+          "batch_backpressure": {
+            "calls": 510,
+            "items": 510,
+            "total_seconds": 10.999352466780692,
+            "mean_seconds": 0.021567357778001357,
+            "recent_samples": 256,
+            "p50_seconds": 0.022322449134662747,
+            "p95_seconds": 0.02643818105570972
+          }
+        },
+        "queues": {
+          "decode_inflight_records": {
+            "current": 0,
+            "peak": 32
+          },
+          "batch_queue": {
+            "current": 0,
+            "peak": 2
+          }
+        },
+        "source": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 10,
+          "cache_misses": 0,
+          "cache_downloaded_bytes": 0,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      },
+      "metrics": {
+        "metrics/precision(B)": 0.58853,
+        "metrics/recall(B)": 0.47847,
+        "metrics/mAP50(B)": 0.49478,
+        "metrics/mAP50-95(B)": 0.34025,
+        "val/box_loss": 1.19289,
+        "val/cls_loss": 1.29411,
+        "val/dfl_loss": 1.20496
+      }
+    }
+  ],
+  "metrics": {
+    "metrics/precision(B)": 0.58827,
+    "metrics/recall(B)": 0.47836,
+    "metrics/mAP50(B)": 0.49468,
+    "metrics/mAP50-95(B)": 0.34028,
+    "val/box_loss": 1.19298,
+    "val/cls_loss": 1.29437,
+    "val/dfl_loss": 1.20497
+  },
+  "parent_max_rss_mib": 5145.8515625,
+  "best": "/data/datasets/shardpack-yolo-alignment-20260929/runs/internal-s3-amp-final/weights/best.pt",
+  "initial_checkpoint_sha256": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1"
+}

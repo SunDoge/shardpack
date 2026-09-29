@@ -134,3 +134,6 @@ process I/O counters.
 
 Follow-up: [FP32 vs FP16 AMP](coco-yolo-amp.md) measures the training-side
 throughput/allocated-memory change while retaining the same ShardPack loader.
+
+Follow-up: [internal S3 and plaintext cache](coco-internal-s3.md) validates
+encrypted remote first-epoch streaming and subsequent cache-only shard reads.
