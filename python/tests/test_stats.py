@@ -109,6 +109,19 @@ def test_source_read_failure_preserves_timing():
     assert loader.stats()["status"] == "failed"
 
 
+def test_non_exception_worker_failure_is_forwarded():
+    class NativeFailure(BaseException):
+        pass
+
+    def decode(_):
+        raise NativeFailure("binding failed")
+
+    loader = ThreadedLoader(range(3), decode=decode, enable_stats=True)
+    with pytest.raises(NativeFailure, match="binding failed"):
+        list(loader)
+    assert loader.stats()["status"] == "failed"
+
+
 def test_backpressure_is_recorded():
     entered = threading.Event()
 

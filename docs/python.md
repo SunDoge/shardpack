@@ -1,5 +1,9 @@
 # Python SDK
 
+For Mosaic/MixUp companion selection, see [SamplePool and SamplePoolSource](sample-pool.md).
+They reuse a bounded history of encoded records without changing primary coverage
+or fetching additional remote objects.
+
 For training bottleneck diagnostics, enable `ThreadedLoader(..., enable_stats=True)`
 and query `loader.stats()`. See [loader observability](loader-observability.md)
 for stage timings, queue waits, native source counters, and measurement limits.

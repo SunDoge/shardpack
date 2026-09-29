@@ -3,10 +3,13 @@ from os import PathLike
 from ._native import EpochScheduler as EpochScheduler
 from ._native import Record as Record
 from ._native import RecordLoader as RecordLoader
+from ._native import SamplePool as SamplePool
 from ._native import __version__ as __version__
 from .api import Config
 from .loader import ShardPackSource as ShardPackSource
 from .loader import ThreadedLoader as ThreadedLoader
+from .sampling import SampleGroup as SampleGroup
+from .sampling import SamplePoolSource as SamplePoolSource
 
 class Dataset:
     def __init__(

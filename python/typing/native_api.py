@@ -2,7 +2,7 @@
 
 from typing import assert_type
 
-from shardpack import Dataset, Record, RecordLoader, _native
+from shardpack import Dataset, Record, RecordLoader, SamplePool, SamplePoolSource, _native
 
 
 def check(native: _native.Dataset, public: Dataset, writer: _native.DatasetWriter) -> None:
@@ -19,3 +19,11 @@ def check(native: _native.Dataset, public: Dataset, writer: _native.DatasetWrite
     assert_type(writer.finish(), str)
     assert_type(_native.EpochScheduler().next(), tuple[int, int, int])
     assert_type(_native.cli_main(["shardpack", "--help"]), int)
+    pool = SamplePool(max_records=16, max_bytes=1024)
+    pool.insert(record)
+    assert_type(pool.sample(1), list[Record])
+    assert_type(pool.available(exclude_ids=[record.sample_id]), int)
+    assert_type(pool.buffered_bytes, int)
+    group = next(iter(SamplePoolSource([record])))
+    assert_type(group.primary, Record)
+    assert_type(group.extras, tuple[Record, ...])

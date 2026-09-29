@@ -11,6 +11,7 @@ mod metrics;
 #[cfg(feature = "pipeline")]
 mod pipeline;
 mod prefetch;
+mod sample_pool;
 pub use dataset_reader::{
     DatasetReader, IncompleteLayoutPolicy, LoaderCheckpoint, ReaderPosition, RetryPolicy,
 };
@@ -23,6 +24,7 @@ pub use pipeline::{
     RegistryRecordDecoder, RuntimeLimits, TrainingPipeline,
 };
 pub use prefetch::NetworkPrefetch;
+pub use sample_pool::{SamplePool, SamplePoolError, SamplePoolLimits};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DistributedContext {

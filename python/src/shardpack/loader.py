@@ -16,6 +16,7 @@ from typing import Any
 from ._native import EpochScheduler
 from ._stats import LoaderStats, measured
 from .api import Config, Dataset
+from .sampling import SamplePoolSource
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,7 @@ class _Batch:
 
 @dataclass(frozen=True)
 class _Failure:
-    error: Exception
+    error: BaseException
 
 
 class _End:
@@ -214,7 +215,7 @@ class ThreadedLoader:
         if self._stats is None:
             return {"enabled": self.enable_stats, "status": "not_started"}
         result = self._stats.snapshot()
-        if isinstance(self.source, ShardPackSource):
+        if isinstance(self.source, (ShardPackSource, SamplePoolSource)):
             result["source"] = self.source.stats()
         return result
 
@@ -256,8 +257,9 @@ class ThreadedLoader:
                 else:
                     status = "completed"
                     return
-        except Exception:
-            status = "failed"
+        except BaseException as error:
+            if not isinstance(error, GeneratorExit):
+                status = "failed"
             raise
         finally:
             stop.set()
@@ -380,7 +382,7 @@ class ThreadedLoader:
                 self._put(output, _Batch(value), stop, stats)
             if not stop.is_set():
                 self._put(output, _END, stop, stats)
-        except Exception as error:  # noqa: BLE001 - forward producer failures
+        except BaseException as error:  # noqa: BLE001 - includes native binding panics
             self._put(output, _Failure(error), stop, stats)
         finally:
             stop.set()

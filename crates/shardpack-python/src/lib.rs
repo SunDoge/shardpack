@@ -858,6 +858,81 @@ fn cli_main(py: Python<'_>, args: Vec<String>) -> i32 {
     py.detach(|| shardpack_cli::main_from(args))
 }
 
+#[pyclass(module = "shardpack._native", name = "SamplePool")]
+struct PySamplePool {
+    pool: shardpack_runtime::SamplePool,
+}
+
+fn pool_exclusions(ids: Option<Vec<Vec<u8>>>) -> PyResult<Vec<[u8; 16]>> {
+    ids.unwrap_or_default()
+        .into_iter()
+        .map(|id| {
+            id.try_into().map_err(|_| {
+                PyValueError::new_err("excluded SampleId must contain exactly 16 bytes")
+            })
+        })
+        .collect()
+}
+
+#[pymethods]
+impl PySamplePool {
+    #[new]
+    #[pyo3(signature = (*, max_records, max_bytes, seed=0))]
+    fn new(max_records: usize, max_bytes: usize, seed: u64) -> PyResult<Self> {
+        let pool = shardpack_runtime::SamplePool::new(
+            shardpack_runtime::SamplePoolLimits {
+                max_records,
+                max_bytes,
+            },
+            seed,
+        )
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self { pool })
+    }
+
+    fn insert(&mut self, record: &PyRecord) -> PyResult<()> {
+        self.pool
+            .insert(EncodedRecord {
+                sample_id: record.sample_id,
+                flags: record.flags,
+                payload: record.payload.clone(),
+            })
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[pyo3(signature = (count, *, exclude_ids=None, replace=false))]
+    fn sample(
+        &mut self,
+        count: usize,
+        exclude_ids: Option<Vec<Vec<u8>>>,
+        replace: bool,
+    ) -> PyResult<Vec<PyRecord>> {
+        self.pool
+            .sample(count, &pool_exclusions(exclude_ids)?, replace)
+            .map(|records| records.into_iter().map(PyRecord::from_encoded).collect())
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[pyo3(signature = (*, exclude_ids=None))]
+    fn available(&self, exclude_ids: Option<Vec<Vec<u8>>>) -> PyResult<usize> {
+        Ok(self.pool.available(&pool_exclusions(exclude_ids)?))
+    }
+
+    #[pyo3(signature = (*, seed=0))]
+    fn reset(&mut self, seed: u64) {
+        self.pool.reset(seed);
+    }
+
+    fn __len__(&self) -> usize {
+        self.pool.len()
+    }
+
+    #[getter]
+    fn buffered_bytes(&self) -> usize {
+        self.pool.buffered_bytes()
+    }
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDataset>()?;
@@ -865,6 +940,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRecord>()?;
     module.add_class::<PyRecordLoader>()?;
     module.add_class::<PyEpochScheduler>()?;
+    module.add_class::<PySamplePool>()?;
     module.add_function(wrap_pyfunction!(cli_main, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
