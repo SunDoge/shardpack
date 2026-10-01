@@ -191,14 +191,18 @@ later epochs skip both the network and AEAD work. Plaintext cache entries are
 bound to a one-way commitment of the supplied key. Use plaintext mode only when
 the node-local disk is inside the trusted boundary.
 
-`network_prefetch_bytes` is a total byte budget shared by at most
-`network_prefetch_bytes` is shared by at most `network_concurrency` in-flight
-shards. It bounds compressed/ciphertext bytes, not decoded tensors. Cache
+`network_prefetch_bytes` is a chunk-buffer budget shared by at most
+`network_concurrency` in-flight shards, including the currently consumed shard.
+It bounds buffered stored-stream bytes (decrypted for plaintext cache), not
+decoded tensors, HTTP buffers or cache block allocations. Cache
 population and training consume the same stream, so a
 cold epoch does not wait for a complete shard download before yielding records.
 These limits apply to each `RecordLoader`. The framework-neutral source creates
 one reader per training rank, so framework worker processes do not multiply the
 network and cache budgets.
+
+Call `source.cache_plan()` before training for a read-only whole-layout cache
+budget/free-space estimate. See [capacity planning and runtime counters](loader-observability.md).
 
 Production training should integrate the Rust crates directly—especially
 `shardpack-runtime`, `shardpack-cache`, `shardpack-storage`, and

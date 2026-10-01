@@ -253,9 +253,15 @@ def run(args):
             cache_dir=spec["cache_dir"],
             cache_mode="plaintext",
             cache_max_bytes=args.cache_max_bytes,
+            network_concurrency=args.network_concurrency,
+            network_prefetch_bytes=args.network_prefetch_bytes,
             encryption_key_id=spec["encryption_key_id"],
             encryption_key_path=spec["encryption_key_path"],
         )
+        plan = sources["train"].cache_plan()
+        print("CACHE_PLAN " + json.dumps(plan), flush=True)
+        if not plan["budget_covers_stored_bytes"]:
+            raise ValueError("cache budget is too small for this full-cache benchmark")
     trainer_type = MapTrainer if args.mode == "map" else ShardPackDetectionTrainer
     trainer = trainer_type(
         train_source=sources["train"],
@@ -426,6 +432,8 @@ def main():
     p.add_argument("--amp", action="store_true", help="enable FP16 AMP (verified after setup)")
     p.add_argument("--run-name", help="unique output prefix; defaults to map/stream")
     p.add_argument("--source-spec", help="private remote source descriptor from coco_s3_prepare.py")
+    p.add_argument("--network-concurrency", type=int, default=2)
+    p.add_argument("--network-prefetch-bytes", type=int, default=64 * 1024**2)
     p.add_argument(
         "--cache-max-bytes",
         type=int,
@@ -436,6 +444,11 @@ def main():
     args = p.parse_args()
     if args.cache_max_bytes <= 0:
         p.error("--cache-max-bytes must be positive")
+    if (
+        args.network_concurrency < 1
+        or not args.network_concurrency <= args.network_prefetch_bytes <= 2**32 - 1
+    ):
+        p.error("network concurrency must be positive and fit within the u32 prefetch budget")
     cv2.setNumThreads(1)
     torch.set_num_threads(2)
     if args.mode == "prepare":

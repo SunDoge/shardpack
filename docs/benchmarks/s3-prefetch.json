@@ -1,0 +1,302 @@
+[
+  {
+    "run": "old-2",
+    "concurrency": 2,
+    "prefetch_mib": 64,
+    "stored_bytes": 1338564602,
+    "epochs": [
+      {
+        "mode": "cold",
+        "seconds": 61.6895843509119,
+        "first_record_seconds": 17.45323425112292,
+        "records": 8192,
+        "records_per_second": 132.79389197049932,
+        "metrics": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 0,
+          "cache_misses": 10,
+          "cache_downloaded_bytes": 1338564602,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      },
+      {
+        "mode": "warm",
+        "seconds": 0.9259484969079494,
+        "first_record_seconds": 0.4023408847860992,
+        "records": 8192,
+        "records_per_second": 8847.144336165367,
+        "metrics": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 10,
+          "cache_misses": 0,
+          "cache_downloaded_bytes": 0,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      }
+    ]
+  },
+  {
+    "run": "new-2",
+    "concurrency": 2,
+    "prefetch_mib": 64,
+    "stored_bytes": 1338564602,
+    "epochs": [
+      {
+        "mode": "cold",
+        "seconds": 38.702276333002374,
+        "first_record_seconds": 5.721012501977384,
+        "records": 8192,
+        "records_per_second": 211.66713630780632,
+        "metrics": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 0,
+          "cache_misses": 10,
+          "cache_downloaded_bytes": 1338564602,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      },
+      {
+        "mode": "warm",
+        "seconds": 0.9151893579401076,
+        "first_record_seconds": 0.3815371231175959,
+        "records": 8192,
+        "records_per_second": 8951.153036174297,
+        "metrics": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 10,
+          "cache_misses": 0,
+          "cache_downloaded_bytes": 0,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      }
+    ]
+  },
+  {
+    "run": "new-4",
+    "concurrency": 4,
+    "prefetch_mib": 128,
+    "stored_bytes": 1338564602,
+    "epochs": [
+      {
+        "mode": "cold",
+        "seconds": 39.16083410801366,
+        "first_record_seconds": 7.7506645349785686,
+        "records": 8192,
+        "records_per_second": 209.18859841965505,
+        "metrics": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 0,
+          "cache_misses": 10,
+          "cache_downloaded_bytes": 1338564602,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      },
+      {
+        "mode": "warm",
+        "seconds": 0.9701921090018004,
+        "first_record_seconds": 0.3344453340396285,
+        "records": 8192,
+        "records_per_second": 8443.688547857275,
+        "metrics": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 10,
+          "cache_misses": 0,
+          "cache_downloaded_bytes": 0,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      }
+    ]
+  },
+  {
+    "run": "new-8",
+    "concurrency": 8,
+    "prefetch_mib": 256,
+    "stored_bytes": 1338564602,
+    "epochs": [
+      {
+        "mode": "cold",
+        "seconds": 55.33287852886133,
+        "first_record_seconds": 6.661808165023103,
+        "records": 8192,
+        "records_per_second": 148.04940964217317,
+        "metrics": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 0,
+          "cache_misses": 10,
+          "cache_downloaded_bytes": 1338564602,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      },
+      {
+        "mode": "warm",
+        "seconds": 0.9555599349550903,
+        "first_record_seconds": 0.3630574981216341,
+        "records": 8192,
+        "records_per_second": 8572.98396503513,
+        "metrics": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 10,
+          "cache_misses": 0,
+          "cache_downloaded_bytes": 0,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      }
+    ]
+  },
+  {
+    "run": "new-2-repeat",
+    "concurrency": 2,
+    "prefetch_mib": 64,
+    "stored_bytes": 1338564602,
+    "epochs": [
+      {
+        "mode": "cold",
+        "seconds": 46.081100427079946,
+        "first_record_seconds": 12.456891565117985,
+        "records": 8192,
+        "records_per_second": 177.7735324043152,
+        "metrics": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 0,
+          "cache_misses": 10,
+          "cache_downloaded_bytes": 1338564602,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      },
+      {
+        "mode": "warm",
+        "seconds": 0.9193119979463518,
+        "first_record_seconds": 0.3663442919496447,
+        "records": 8192,
+        "records_per_second": 8911.011733013474,
+        "metrics": {
+          "records_read": 8192,
+          "encoded_bytes_read": 1338308186,
+          "shards_completed": 10,
+          "shard_bytes_completed": 1338564602,
+          "shards_verified": 0,
+          "shard_bytes_verified": 0,
+          "prefetched_shards": 10,
+          "retries": 0,
+          "checksum_failures": 0,
+          "queue_backpressure_events": 0,
+          "cache_hits": 10,
+          "cache_misses": 0,
+          "cache_downloaded_bytes": 0,
+          "cache_corrupt_entries": 0,
+          "cache_evicted_entries": 0,
+          "cache_evicted_bytes": 0,
+          "cache_stale_partials_removed": 0
+        }
+      }
+    ]
+  }
+]

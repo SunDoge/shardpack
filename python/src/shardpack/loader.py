@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import os
 import queue
+import shutil
 import threading
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from os import PathLike
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 
@@ -109,6 +111,34 @@ class ShardPackSource:
         """Native counters for the latest started epoch (also retained at EOF)."""
         handle = self._metrics_handle
         return handle.snapshot() if handle is not None else dict(self._last_metrics)
+
+    def cache_plan(self) -> dict[str, Any]:
+        """Read-only whole-layout capacity estimate; does not download shards.
+
+        Stored bytes conservatively estimate plaintext shard size (encryption
+        overhead is removed, compression is retained). Excludes cache metadata,
+        temporary files and other users. Does not assume rank-local ownership or
+        subtract existing cache entries. Free disk is only a point-in-time hint.
+        """
+        dataset = Dataset(
+            self.layout, config=self.config, config_path=self.config_path, store=self.store
+        )
+        free = None
+        if self.cache_dir is not None:
+            path = Path(self.cache_dir).absolute()
+            while not path.exists():
+                path = path.parent
+            free = shutil.disk_usage(path).free
+        return {
+            "scope": "whole_layout",
+            "cache_enabled": self.cache_dir is not None,
+            "stored_bytes": dataset.stored_bytes,
+            "shard_count": dataset.shard_count,
+            "cache_max_bytes": self.cache_max_bytes,
+            "budget_covers_stored_bytes": self.cache_max_bytes >= dataset.stored_bytes,
+            "disk_free_bytes": free,
+            "free_disk_covers_stored_bytes": None if free is None else free >= dataset.stored_bytes,
+        }
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch

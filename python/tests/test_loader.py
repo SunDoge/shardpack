@@ -9,6 +9,30 @@ import shardpack
 DATA = Path(__file__).parent / "data"
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_cache_plan_is_read_only_and_reports_capacity(tmp_path, monkeypatch, enabled):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("shardpack.loader.shutil.disk_usage", lambda path: SimpleNamespace(free=1))
+    cache = tmp_path / "missing" / "cache"
+    source = shardpack.ShardPackSource(
+        (DATA / "layout-key.txt").read_text().strip(),
+        config={"stores": {"local": {"type": "filesystem", "root": DATA}}},
+        cache_dir=cache if enabled else None,
+        cache_max_bytes=1,
+    )
+    plan = source.cache_plan()
+    assert plan["scope"] == "whole_layout"
+    assert plan["stored_bytes"] > 1
+    assert plan["cache_enabled"] == enabled
+    assert not plan["budget_covers_stored_bytes"]
+    assert plan["free_disk_covers_stored_bytes"] is (False if enabled else None)
+    assert not cache.exists()
+    assert source.stats() == {}
+    source.cache_max_bytes = plan["stored_bytes"]
+    assert source.cache_plan()["budget_covers_stored_bytes"]
+
+
 def test_live_source_metrics_are_safe_from_decode_and_consumer_threads(tmp_path):
     source = shardpack.ShardPackSource(
         (DATA / "layout-key.txt").read_text().strip(),

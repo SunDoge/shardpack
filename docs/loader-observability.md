@@ -35,6 +35,42 @@ Fields are sampled independently, not as one atomic transaction.
 
 ## Snapshot contract
 
+### Capacity and network preflight
+
+Before starting a job, `source.cache_plan()` reads only layout metadata and
+reports `stored_bytes`, `shard_count`, `cache_max_bytes`,
+`budget_covers_stored_bytes`, `disk_free_bytes` and
+`free_disk_covers_stored_bytes`. It does not create the cache directory, download
+shards, advance the epoch or modify loader metrics. Disk fields are `None` when
+no cache is configured (`cache_enabled=False`). For example:
+
+```python
+plan = source.cache_plan()
+if plan["cache_enabled"] and not plan["budget_covers_stored_bytes"]:
+    print("Warning: cache budget cannot hold the full stored layout", plan)
+```
+
+This is a **whole-layout planning estimate**, not an exact per-node requirement
+or a guarantee that the disk is sufficient. It does not subtract existing cache
+entries; available space can change. Leave headroom for metadata, temporary
+files and other users. Plaintext cache removes encryption overhead but retains
+compression, so stored shard bytes are a conservative estimate of shard contents.
+The report neither reserves disk space nor rejects intentional partial caches.
+
+`network_concurrency` counts the active shard plus queued shard streams;
+`network_prefetch_bytes` bounds their combined chunk buffers (not total process
+RSS, HTTP internals, block/decode/shuffle allocations). Short reads are coalesced
+into at most 1 MiB chunks. This improves buffer utilization but can delay the
+first delivered bytes until one chunk or EOF is available. Dropping a prefetched
+reader aborts its background task, including pending opens/reads; completion of
+the abort is asynchronous, and any underlying blocking OS operation may finish.
+
+Defaults remain two streams / 64 MiB. Tune both fields together using the
+[S3 prefetch benchmark](benchmarks/s3-prefetch.md); more concurrent streams do
+not guarantee a faster ordered record stream.
+
+### Timing and counters
+
 - Disabled: `{"enabled": false}`. No instrumentation clocks or locks are used.
 - `status`: `not_started`, then `running`, then `completed`, `closed` (early
   iterator close), or `failed`.
