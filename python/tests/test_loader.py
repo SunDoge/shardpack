@@ -9,6 +9,138 @@ import shardpack
 DATA = Path(__file__).parent / "data"
 
 
+def test_trusted_identity_and_source_resolution():
+    config = {"stores": {"local": {"type": "filesystem", "root": DATA}}}
+    layout = (DATA / "layout-key.txt").read_text().strip()
+    trusted = shardpack.Dataset(layout, config=config)
+    source = shardpack.ShardPackSource(
+        layout,
+        config=config,
+        expected_layout_id=trusted.layout_id,
+        expected_snapshot_id=trusted.snapshot_id,
+    )
+    assert source.resolve() is source.resolve()
+    # Resolution pins the object, not an address to re-fetch each epoch.
+    source.layout = "missing.pb"
+    assert len(list(source)) == 7
+    assert len(list(source)) == 7
+    for snapshot, physical in (
+        (trusted.snapshot_id, bytes(32)),
+        (bytes(32), trusted.layout_id),
+    ):
+        with pytest.raises(RuntimeError, match="trusted dataset identity"):
+            shardpack.Dataset(
+                layout, config=config, expected_snapshot_id=snapshot, expected_layout_id=physical
+            )
+    with pytest.raises(ValueError, match="together"):
+        shardpack.Dataset(layout, config=config, expected_layout_id=trusted.layout_id)
+
+
+def test_cancellation_handle_is_cross_thread_and_terminal():
+    from concurrent.futures import ThreadPoolExecutor
+
+    dataset = shardpack.Dataset(
+        (DATA / "layout-key.txt").read_text().strip(),
+        config={"stores": {"local": {"type": "filesystem", "root": DATA}}},
+    )
+    for shuffle in (False, True):
+        reader = dataset.records(
+            shuffle_max_records=3 if shuffle else 0,
+            shuffle_max_bytes=4096 if shuffle else 0,
+        )
+        handle = reader.cancellation_handle()
+        next(reader)
+        with ThreadPoolExecutor(1) as executor:
+            executor.submit(handle.cancel).result()
+        with pytest.raises(RuntimeError, match="cancelled"):
+            next(reader)
+        with pytest.raises(RuntimeError, match="cancelled"):
+            next(reader)
+        del reader
+        handle.cancel()
+
+
+def test_distributed_loader_rejects_empty_rank_before_decode():
+    source = shardpack.ShardPackSource(
+        (DATA / "layout-key.txt").read_text().strip(),
+        config={"stores": {"local": {"type": "filesystem", "root": DATA}}},
+        rank=0,
+        world_size=100,
+    )
+    decoded = []
+    loader = shardpack.ThreadedLoader(
+        source,
+        decode=lambda record: decoded.append(record),
+        batch_size=2,
+    )
+    with pytest.raises(RuntimeError, match="unequal or zero steps"):
+        list(loader)
+    assert decoded == []
+
+
+def test_cancel_interrupts_pending_http_read(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from queue import Queue
+
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    entered = threading.Event()
+    release = threading.Event()
+    handles = Queue()
+
+    class Handler(SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.endswith(".spk"):
+                entered.set()
+                release.wait(10)
+                self.close_connection = True
+                return
+            super().do_GET()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(DATA)))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+
+    def read():
+        dataset = shardpack.Dataset(
+            (DATA / "layout-key.txt").read_text().strip(),
+            config={
+                "stores": {
+                    "local": {
+                        "type": "http",
+                        "base_url": f"http://127.0.0.1:{server.server_port}/",
+                    }
+                }
+            },
+        )
+        reader = dataset.records()
+        handles.put(reader.cancellation_handle())
+        try:
+            return next(reader)
+        finally:
+            del reader
+
+    executor = ThreadPoolExecutor(1)
+    try:
+        future = executor.submit(read)
+        handle = handles.get(timeout=5)
+        assert entered.wait(5)
+        handle.cancel()
+        with pytest.raises(RuntimeError, match="cancelled"):
+            future.result(timeout=3)
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+        executor.shutdown(wait=True)
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_cache_plan_is_read_only_and_reports_capacity(tmp_path, monkeypatch, enabled):
     from types import SimpleNamespace

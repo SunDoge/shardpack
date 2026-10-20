@@ -60,6 +60,8 @@ class ShardPackSource:
         config: Config | None = None,
         config_path: str | PathLike[str] | None = None,
         store: str | None = None,
+        expected_snapshot_id: bytes | None = None,
+        expected_layout_id: bytes | None = None,
         epoch: int = 0,
         shard_seed: int = 0,
         rank: int | None = None,
@@ -85,6 +87,12 @@ class ShardPackSource:
         self.config_path = None if config_path is None else os.fspath(config_path)
         self.layout = layout
         self.store = store
+        if (expected_snapshot_id is None) != (expected_layout_id is None):
+            raise ValueError("expected snapshot and layout IDs must be provided together")
+        self.expected_snapshot_id = expected_snapshot_id
+        self.expected_layout_id = expected_layout_id
+        self._dataset: Dataset | None = None
+        self._resolve_lock = threading.Lock()
         self.epoch = epoch
         self.shard_seed = shard_seed
         self.rank = rank
@@ -105,12 +113,31 @@ class ShardPackSource:
             None if encryption_key_path is None else os.fspath(encryption_key_path)
         )
         self._metrics_handle: Any = None
+        self._cancellation_handle: Any = None
         self._last_metrics: dict[str, int] = {}
 
     def stats(self) -> dict[str, int]:
         """Native counters for the latest started epoch (also retained at EOF)."""
         handle = self._metrics_handle
         return handle.snapshot() if handle is not None else dict(self._last_metrics)
+
+    def resolve(self) -> Dataset:
+        """Resolve once, then retain the exact immutable manifest for this source.
+
+        Without expected IDs, the initial manifest transport must be trusted.
+        Create a new source to select a different dataset version.
+        """
+        with self._resolve_lock:
+            if self._dataset is None:
+                self._dataset = Dataset(
+                    self.layout,
+                    config=self.config,
+                    config_path=self.config_path,
+                    store=self.store,
+                    expected_snapshot_id=self.expected_snapshot_id,
+                    expected_layout_id=self.expected_layout_id,
+                )
+            return self._dataset
 
     def cache_plan(self) -> dict[str, Any]:
         """Read-only whole-layout capacity estimate; does not download shards.
@@ -120,9 +147,7 @@ class ShardPackSource:
         temporary files and other users. Does not assume rank-local ownership or
         subtract existing cache entries. Free disk is only a point-in-time hint.
         """
-        dataset = Dataset(
-            self.layout, config=self.config, config_path=self.config_path, store=self.store
-        )
+        dataset = self.resolve()
         free = None
         if self.cache_dir is not None:
             path = Path(self.cache_dir).absolute()
@@ -144,6 +169,12 @@ class ShardPackSource:
         self.epoch = epoch
         self._epoch_scheduler.set_epoch(epoch)
 
+    def cancel(self) -> None:
+        """Cancel the active native read without moving its thread-affine reader."""
+        handle = self._cancellation_handle
+        if handle is not None:
+            handle.cancel()
+
     def _distributed_context(self) -> tuple[int, int]:
         if self.rank is not None:
             assert self.world_size is not None
@@ -151,16 +182,27 @@ class ShardPackSource:
         return int(os.environ.get("RANK", "0")), int(os.environ.get("WORLD_SIZE", "1"))
 
     def __iter__(self) -> Iterator[Any]:
+        return self.iter_with_stop(None)
+
+    def iter_with_stop(
+        self,
+        stop: threading.Event | None,
+        *,
+        batch_size: int | None = None,
+        drop_last: bool = False,
+    ) -> Iterator[Any]:
         rank, world_size = self._distributed_context()
         epoch, shard_seed, shuffle_seed = self._epoch_scheduler.next()
         if not self.auto_advance_epoch:
             self._epoch_scheduler.set_epoch(epoch)
-        dataset = Dataset(
-            self.layout,
-            config=self.config,
-            config_path=self.config_path,
-            store=self.store,
-        )
+        dataset = self.resolve()
+        if world_size > 1 and batch_size is not None:
+            dataset.validate_epoch(
+                shard_seed=shard_seed,
+                world_size=world_size,
+                batch_size=batch_size,
+                drop_last=drop_last,
+            )
         records = dataset.records(
             cache_dir=self.cache_dir,
             cache_max_bytes=self.cache_max_bytes,
@@ -181,14 +223,24 @@ class ShardPackSource:
             encryption_key_path=self.encryption_key_path,
         )
         handle = records.metrics_handle()
+        cancellation = records.cancellation_handle()
+        self._cancellation_handle = cancellation
+        if stop is not None and stop.is_set():
+            cancellation.cancel()
         self._metrics_handle = handle
         self._last_metrics = {}
         try:
             yield from records
         finally:
-            if self._metrics_handle is handle:
-                self._last_metrics = records.metrics()
-                self._metrics_handle = None
+            try:
+                if self._metrics_handle is handle:
+                    self._last_metrics = records.metrics()
+                    self._metrics_handle = None
+                    self._cancellation_handle = None
+            finally:
+                # Tracebacks can cross into the consumer thread. Never retain
+                # the unsendable native reader in the generator's frame.
+                del records
 
 
 class ThreadedLoader:
@@ -294,6 +346,8 @@ class ThreadedLoader:
             raise
         finally:
             stop.set()
+            if isinstance(self.source, ShardPackSource):
+                self.source.cancel()
             producer.join()
             if stats is not None:
                 stats.finish(status)
@@ -343,8 +397,15 @@ class ThreadedLoader:
             max_workers=self.decode_workers,
             thread_name_prefix="shardpack-decode",
         )
+        source = None
         try:
-            source = iter(self.source)
+            source = (
+                self.source.iter_with_stop(
+                    stop, batch_size=self.batch_size, drop_last=self.drop_last
+                )
+                if isinstance(self.source, ShardPackSource)
+                else iter(self.source)
+            )
             while not stop.is_set():
                 while not exhausted and pending_records < self.decode_prefetch:
                     records = []
@@ -417,6 +478,11 @@ class ThreadedLoader:
             self._put(output, _Failure(error), stop, stats)
         finally:
             stop.set()
-            for future in pending:
-                future.cancel()
-            executor.shutdown(wait=True, cancel_futures=True)
+            close = getattr(source, "close", None)
+            try:
+                if close is not None:
+                    close()
+            finally:
+                for future in pending:
+                    future.cancel()
+                executor.shutdown(wait=True, cancel_futures=True)

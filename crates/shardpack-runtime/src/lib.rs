@@ -5,6 +5,8 @@ use shardpack_manifest::ShardId;
 use snafu::Snafu;
 
 mod dataset_reader;
+mod epoch_plan;
+pub use epoch_plan::EpochPlan;
 #[cfg(feature = "job-pin")]
 mod job_pin;
 mod metrics;

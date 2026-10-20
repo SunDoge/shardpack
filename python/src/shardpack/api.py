@@ -46,16 +46,24 @@ class Dataset:
         config: Config | None = None,
         config_path: str | PathLike[str] | None = None,
         store: str | None = None,
+        expected_snapshot_id: bytes | None = None,
+        expected_layout_id: bytes | None = None,
     ) -> None:
         self._native = _NativeDataset(
             layout,
             **_config_args(config, config_path),
             store=store,
+            expected_snapshot_id=expected_snapshot_id,
+            expected_layout_id=expected_layout_id,
         )
 
     @property
     def layout_id(self) -> bytes:
         return self._native.layout_id
+
+    @property
+    def snapshot_id(self) -> bytes:
+        return self._native.snapshot_id
 
     @property
     def record_count(self) -> int:
@@ -75,6 +83,16 @@ class Dataset:
 
     def records(self, **options: Any) -> RecordLoader:
         return self._native.records(**options)
+
+    def validate_epoch(
+        self, *, shard_seed: int, world_size: int, batch_size: int, drop_last: bool = False
+    ) -> list[int]:
+        return self._native.validate_epoch(
+            shard_seed=shard_seed,
+            world_size=world_size,
+            batch_size=batch_size,
+            drop_last=drop_last,
+        )
 
 
 class DatasetWriter:

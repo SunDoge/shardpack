@@ -600,14 +600,30 @@ struct PyDataset {
 #[pymethods]
 impl PyDataset {
     #[new]
-    #[pyo3(signature = (layout, *, config=None, config_path=None, store=None))]
+    #[pyo3(signature = (layout, *, config=None, config_path=None, store=None, expected_snapshot_id=None, expected_layout_id=None))]
     fn new(
         py: Python<'_>,
         layout: String,
         config: Option<String>,
         config_path: Option<PathBuf>,
         store: Option<String>,
+        expected_snapshot_id: Option<Vec<u8>>,
+        expected_layout_id: Option<Vec<u8>>,
     ) -> PyResult<Self> {
+        let identity = match (expected_snapshot_id, expected_layout_id) {
+            (Some(snapshot), Some(layout)) => Some(shardpack_core::DatasetIdentity {
+                snapshot_id: shardpack_manifest::SnapshotId::from_slice(&snapshot)
+                    .map_err(runtime_error)?,
+                layout_id: shardpack_manifest::LayoutId::from_slice(&layout)
+                    .map_err(runtime_error)?,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "expected snapshot and layout IDs must be provided together",
+                ));
+            }
+        };
         let config = load_config(config.as_deref(), config_path.as_deref())?;
         let store_id = config
             .selected_store_id(store.as_deref())
@@ -622,6 +638,9 @@ impl PyDataset {
         let manifest = py
             .detach(|| runtime.block_on(shardpack_core::load_layout(&manifest_store, &layout)))
             .map_err(runtime_error)?;
+        if let Some(identity) = identity {
+            identity.verify(&manifest).map_err(runtime_error)?;
+        }
         Ok(Self {
             stores,
             layout: Arc::new(manifest),
@@ -632,6 +651,41 @@ impl PyDataset {
     #[getter]
     fn layout_id<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.layout.layout_id)
+    }
+
+    #[getter]
+    fn snapshot_id<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.layout.snapshot_id)
+    }
+
+    #[pyo3(signature = (*, shard_seed, world_size, batch_size, drop_last=false))]
+    fn validate_epoch(
+        &self,
+        shard_seed: u64,
+        world_size: usize,
+        batch_size: u64,
+        drop_last: bool,
+    ) -> PyResult<Vec<u64>> {
+        let plan = shardpack_runtime::EpochPlan::build(
+            &self.layout.shards,
+            shard_seed,
+            world_size,
+            batch_size,
+            drop_last,
+        )
+        .map_err(runtime_error)?;
+        plan.require_equal_steps().map_err(runtime_error)?;
+        if !drop_last
+            && plan
+                .records_per_rank
+                .windows(2)
+                .any(|pair| pair[0] != pair[1])
+        {
+            return Err(PyValueError::new_err(
+                "unequal final batch sizes require an explicit gradient weighting policy",
+            ));
+        }
+        Ok(plan.records_per_rank)
     }
 
     #[getter]
@@ -766,6 +820,7 @@ impl PyDataset {
             source_exhausted: false,
             metrics,
             cache_metrics,
+            cancellation: tokio::sync::watch::channel(false).0,
         })
     }
 }
@@ -778,6 +833,37 @@ struct PyRecordLoader {
     source_exhausted: bool,
     metrics: RuntimeMetrics,
     cache_metrics: Option<CacheMetrics>,
+    cancellation: tokio::sync::watch::Sender<bool>,
+}
+
+impl PyRecordLoader {
+    fn next_cancellable(&mut self, py: Python<'_>) -> PyResult<Option<EncodedRecord>> {
+        let mut cancelled = self.cancellation.subscribe();
+        py.detach(|| {
+            self.runtime.block_on(async {
+            if *cancelled.borrow() {
+                return Err(PyRuntimeError::new_err("record loading cancelled"));
+            }
+            tokio::select! {
+                biased;
+                _ = cancelled.changed() => Err(PyRuntimeError::new_err("record loading cancelled")),
+                result = self.reader.next_record() => result.map_err(runtime_error),
+            }
+        })
+        })
+    }
+}
+
+#[pyclass(frozen, module = "shardpack._native", name = "LoaderCancellation")]
+struct PyLoaderCancellation {
+    sender: tokio::sync::watch::Sender<bool>,
+}
+
+#[pymethods]
+impl PyLoaderCancellation {
+    fn cancel(&self) {
+        self.sender.send_replace(true);
+    }
 }
 
 #[pymethods]
@@ -787,10 +873,11 @@ impl PyRecordLoader {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyRecord>> {
+        if *self.cancellation.borrow() {
+            return Err(PyRuntimeError::new_err("record loading cancelled"));
+        }
         if self.shuffle.is_none() {
-            let record = py
-                .detach(|| self.runtime.block_on(self.reader.next_record()))
-                .map_err(runtime_error)?;
+            let record = self.next_cancellable(py)?;
             return Ok(record.map(PyRecord::from_encoded));
         }
 
@@ -803,9 +890,7 @@ impl PyRecordLoader {
                     .drain_next()
                     .map(PyRecord::from_encoded));
             }
-            let record = py
-                .detach(|| self.runtime.block_on(self.reader.next_record()))
-                .map_err(runtime_error)?;
+            let record = self.next_cancellable(py)?;
             match record {
                 Some(record) => {
                     if let Some(emitted) = self
@@ -831,6 +916,12 @@ impl PyRecordLoader {
         PyLoaderMetrics {
             metrics: self.metrics.clone(),
             cache_metrics: self.cache_metrics.clone(),
+        }
+    }
+
+    fn cancellation_handle(&self) -> PyLoaderCancellation {
+        PyLoaderCancellation {
+            sender: self.cancellation.clone(),
         }
     }
 }
@@ -961,6 +1052,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRecord>()?;
     module.add_class::<PyRecordLoader>()?;
     module.add_class::<PyLoaderMetrics>()?;
+    module.add_class::<PyLoaderCancellation>()?;
     module.add_class::<PyEpochScheduler>()?;
     module.add_class::<PySamplePool>()?;
     module.add_function(wrap_pyfunction!(cli_main, module)?)?;

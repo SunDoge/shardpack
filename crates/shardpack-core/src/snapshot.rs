@@ -12,6 +12,35 @@ pub struct ResolvedDataset {
     pub layout_id: LayoutId,
 }
 
+/// Identity supplied by a trusted control plane, never learned from a mirror.
+#[derive(Clone, Copy, Debug)]
+pub struct DatasetIdentity {
+    pub snapshot_id: SnapshotId,
+    pub layout_id: LayoutId,
+}
+
+impl DatasetIdentity {
+    pub fn verify(&self, layout: &proto::LayoutManifest) -> Result<()> {
+        validate_layout(layout).map_err(|source| Error::Manifest { source })?;
+        if layout.layout_id != self.layout_id.0 || layout.snapshot_id != self.snapshot_id.0 {
+            return Err(Error::SnapshotLayoutMismatch {
+                reason: "manifest does not match trusted dataset identity",
+            });
+        }
+        Ok(())
+    }
+}
+
+pub async fn load_trusted_layout(
+    store: &Store,
+    key: &str,
+    identity: DatasetIdentity,
+) -> Result<proto::LayoutManifest> {
+    let layout = load_layout(store, key).await?;
+    identity.verify(&layout)?;
+    Ok(layout)
+}
+
 pub async fn publish_snapshot(
     store: &Store,
     prefix: &str,

@@ -30,8 +30,9 @@ pub use rebalance::{
     rebalance_layout_transaction, rebalance_layout_transaction_with_registry,
 };
 pub use snapshot::{
-    ResolvedDataset, layout_manifest_key, load_layout, load_layout_with_limit, load_snapshot,
-    load_snapshot_with_limit, publish_snapshot, resolve_dataset, snapshot_manifest_key,
+    DatasetIdentity, ResolvedDataset, layout_manifest_key, load_layout, load_layout_with_limit,
+    load_snapshot, load_snapshot_with_limit, load_trusted_layout, publish_snapshot,
+    resolve_dataset, snapshot_manifest_key,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]

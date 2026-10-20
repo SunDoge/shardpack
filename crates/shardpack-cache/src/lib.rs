@@ -281,6 +281,7 @@ impl LocalCache {
         shard_id: ShardId,
         expected_ciphertext_bytes: u64,
     ) -> Result<CacheObject> {
+        ensure_private_namespace(&self.root.join("plaintext")).await?;
         let key = self
             .decryption_key
             .clone()
@@ -318,9 +319,11 @@ impl LocalCache {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let temporary =
             final_path.with_extension(format!("plain.spk.tmp-{}-{sequence}", std::process::id()));
-        let file = tokio::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
+        let mut options = tokio::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options
             .open(&temporary)
             .await
             .map_err(|source| io_error("create plaintext temporary entry", &temporary, source))?;
@@ -805,12 +808,54 @@ async fn publish_file(temporary: &Path, final_path: &Path, shard_id: ShardId) ->
         .map_err(|source| io_error("remove plaintext temporary entry", temporary, source))
 }
 
+// Do not chmod a pre-existing namespace: it may belong to another application.
+// Existing permissive caches require an explicit operator migration.
+async fn ensure_private_namespace(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut builder = tokio::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder
+            .create(path)
+            .await
+            .map_err(|source| io_error("create private cache namespace", path, source))?;
+        let metadata = tokio::fs::symlink_metadata(path)
+            .await
+            .map_err(|source| io_error("inspect private cache namespace", path, source))?;
+        if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+            return Err(io_error(
+                "validate private cache namespace",
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "plaintext namespace must be a non-symlink directory with mode 0700",
+                ),
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        Err(io_error(
+            "validate private cache namespace",
+            path,
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "plaintext cache requires Unix permissions; use ciphertext cache",
+            ),
+        ))
+    }
+}
+
 async fn publish_plaintext_metadata(path: &Path, metadata: PlaintextMetadata) -> Result<()> {
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = path.with_extension(format!("meta.tmp-{}-{sequence}", std::process::id()));
-    let mut file = tokio::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
+    let mut options = tokio::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
         .open(&temporary)
         .await
         .map_err(|source| io_error("create plaintext cache metadata", &temporary, source))?;
@@ -1004,6 +1049,23 @@ impl Drop for CacheMutationLock {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn private_namespace_rejects_permissive_and_symlink_directories() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("plaintext");
+        super::ensure_private_namespace(&path).await.unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(super::ensure_private_namespace(&path).await.is_err());
+        let link = root.path().join("linked");
+        symlink(&path, &link).unwrap();
+        assert!(super::ensure_private_namespace(&link).await.is_err());
+    }
     use bytes::Bytes;
     use futures_util::stream;
     use shardpack_format::{AsyncShardReader, EncryptionKey, ShardWriter, WriterOptions};
@@ -1253,6 +1315,16 @@ mod tests {
         assert_eq!(metrics.misses, 1);
         assert_eq!(metrics.hits, 1);
         assert_eq!(metrics.downloaded_bytes, summary.byte_size);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for path in [cache.path_for(id), plaintext_meta_path(&cache.path_for(id))] {
+                assert_eq!(
+                    std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        }
     }
 
     #[tokio::test]

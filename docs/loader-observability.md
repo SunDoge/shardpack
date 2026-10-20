@@ -44,6 +44,10 @@ reports `stored_bytes`, `shard_count`, `cache_max_bytes`,
 shards, advance the epoch or modify loader metrics. Disk fields are `None` when
 no cache is configured (`cache_enabled=False`). For example:
 
+The first call resolves and retains this source's immutable manifest; subsequent
+calls and epochs reuse it. See [runtime refactor](runtime-refactor.md) for trusted
+IDs and source lifecycle changes.
+
 ```python
 plan = source.cache_plan()
 if plan["cache_enabled"] and not plan["budget_covers_stored_bytes"]:
