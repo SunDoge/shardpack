@@ -5,6 +5,13 @@ recent history of encoded records and samples companions **without removing them
 It is separate from shuffle, does not decode payloads and performs no I/O. No
 file-format, manifest, dependency or primary-epoch semantics change is required.
 
+When wrapping a `ShardPackSource`, `SamplePoolSource` forwards the loader's stop
+signal, native read cancellation and batch/epoch validation. Closing the wrapper
+closes its upstream iterator on the producer thread. Thus companion sampling
+does not bypass unequal-step validation or prevent cancellation of a pending
+shard read. Arbitrary user iterables still need their own cancellation support;
+Python decode callbacks cannot be force-killed safely.
+
 ## Group before parallel decode
 
 ```python

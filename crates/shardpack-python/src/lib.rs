@@ -30,6 +30,47 @@ use shardpack_storage::StoreRegistry;
 const DEFAULT_WRITER_MAX_BATCH_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_WRITER_MAX_BATCH_RECORDS: usize = 1_000_000;
 
+#[pyclass(frozen, module = "shardpack._native", name = "NodeAffinity")]
+struct PyNodeAffinity {
+    inner: shardpack_runtime::NodeAffinity,
+}
+
+#[pymethods]
+impl PyNodeAffinity {
+    #[new]
+    #[pyo3(signature = (*, node_id, node_ids, local_rank, local_world_size, seed=0))]
+    fn new(
+        node_id: String,
+        node_ids: Vec<String>,
+        local_rank: usize,
+        local_world_size: usize,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let inner = shardpack_runtime::NodeAffinity {
+            node_id,
+            node_ids,
+            local_rank,
+            local_world_size,
+            worker: 0,
+            workers_per_rank: 1,
+            affinity_seed: seed,
+        };
+        shardpack_runtime::affinity_assigned_shards(Vec::new(), 0, &inner)
+            .map_err(runtime_error)?;
+        inner
+            .node_ids
+            .len()
+            .checked_mul(local_world_size)
+            .ok_or_else(|| PyValueError::new_err("global world size overflows usize"))?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn world_size(&self) -> usize {
+        self.inner.node_ids.len() * self.inner.local_world_size
+    }
+}
+
 fn load_config(
     config_json: Option<&str>,
     config_path: Option<&std::path::Path>,
@@ -658,21 +699,37 @@ impl PyDataset {
         PyBytes::new(py, &self.layout.snapshot_id)
     }
 
-    #[pyo3(signature = (*, shard_seed, world_size, batch_size, drop_last=false))]
+    #[pyo3(signature = (*, shard_seed, world_size, batch_size, drop_last=false, affinity=None))]
     fn validate_epoch(
         &self,
         shard_seed: u64,
         world_size: usize,
         batch_size: u64,
         drop_last: bool,
+        affinity: Option<PyRef<'_, PyNodeAffinity>>,
     ) -> PyResult<Vec<u64>> {
-        let plan = shardpack_runtime::EpochPlan::build(
-            &self.layout.shards,
-            shard_seed,
-            world_size,
-            batch_size,
-            drop_last,
-        )
+        let plan = if let Some(affinity) = affinity {
+            if world_size != affinity.world_size() {
+                return Err(PyValueError::new_err(
+                    "world_size differs from node affinity",
+                ));
+            }
+            shardpack_runtime::EpochPlan::build_affinity(
+                &self.layout.shards,
+                shard_seed,
+                &affinity.inner,
+                batch_size,
+                drop_last,
+            )
+        } else {
+            shardpack_runtime::EpochPlan::build(
+                &self.layout.shards,
+                shard_seed,
+                world_size,
+                batch_size,
+                drop_last,
+            )
+        }
         .map_err(runtime_error)?;
         plan.require_equal_steps().map_err(runtime_error)?;
         if !drop_last
@@ -708,7 +765,7 @@ impl PyDataset {
         &self.layout_key
     }
 
-    #[pyo3(signature = (*, cache_dir=None, cache_max_bytes=274_877_906_944, cache_mode="ciphertext", network_concurrency=2, network_prefetch_bytes=67_108_864, shuffle_max_records=0, shuffle_max_bytes=0, shuffle_seed=1, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None, encryption_key_path=None))]
+    #[pyo3(signature = (*, cache_dir=None, cache_max_bytes=274_877_906_944, cache_mode="ciphertext", network_concurrency=2, network_prefetch_bytes=67_108_864, shuffle_max_records=0, shuffle_max_bytes=0, shuffle_seed=1, epoch=0, shard_seed=0, rank=0, world_size=1, worker=0, workers_per_rank=1, encryption_key_id=None, encryption_key=None, encryption_key_path=None, affinity=None))]
     #[allow(clippy::too_many_arguments)]
     fn records(
         &self,
@@ -729,6 +786,7 @@ impl PyDataset {
         encryption_key_id: Option<String>,
         encryption_key: Option<&Bound<'_, PyBytes>>,
         encryption_key_path: Option<PathBuf>,
+        affinity: Option<PyRef<'_, PyNodeAffinity>>,
     ) -> PyResult<PyRecordLoader> {
         if (shuffle_max_records == 0) != (shuffle_max_bytes == 0) {
             return Err(PyValueError::new_err(
@@ -758,18 +816,33 @@ impl PyDataset {
 
         let metrics = RuntimeMetrics::default();
         let cache_metrics = cache_dir.as_ref().map(|_| CacheMetrics::default());
-        let mut reader = DatasetReader::new_assigned_with_registry(
-            self.stores.clone(),
-            self.layout.clone(),
-            epoch,
-            shard_seed,
-            DistributedContext {
-                rank,
-                world_size,
-                worker,
-                workers_per_rank,
-            },
-        )
+        let mut reader = if let Some(affinity) = affinity {
+            if rank != 0 || world_size != 1 || worker != 0 || workers_per_rank != 1 {
+                return Err(PyValueError::new_err(
+                    "affinity replaces rank/world_size/worker assignment",
+                ));
+            }
+            DatasetReader::new_affinity_assigned_with_registry(
+                self.stores.clone(),
+                self.layout.clone(),
+                epoch,
+                shard_seed,
+                affinity.inner.clone(),
+            )
+        } else {
+            DatasetReader::new_assigned_with_registry(
+                self.stores.clone(),
+                self.layout.clone(),
+                epoch,
+                shard_seed,
+                DistributedContext {
+                    rank,
+                    world_size,
+                    worker,
+                    workers_per_rank,
+                },
+            )
+        }
         .map_err(runtime_error)?
         .with_metrics(metrics.clone());
         if let Some(cache_dir) = cache_dir {
@@ -1052,6 +1125,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRecord>()?;
     module.add_class::<PyRecordLoader>()?;
     module.add_class::<PyLoaderMetrics>()?;
+    module.add_class::<PyNodeAffinity>()?;
     module.add_class::<PyLoaderCancellation>()?;
     module.add_class::<PyEpochScheduler>()?;
     module.add_class::<PySamplePool>()?;

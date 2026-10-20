@@ -10,6 +10,77 @@ pub struct EpochPlan {
 }
 
 impl EpochPlan {
+    /// Counts are ordered by sorted node ID, then local rank. Homogeneous nodes.
+    pub fn build_affinity(
+        shards: &[proto::ShardMeta],
+        shard_seed: u64,
+        affinity: &crate::NodeAffinity,
+        batch_size: u64,
+        drop_last: bool,
+    ) -> Result<Self> {
+        crate::validate_affinity(affinity)?;
+        if batch_size == 0 || affinity.workers_per_rank != 1 || affinity.worker != 0 {
+            return Err(Error::InvalidTopology);
+        }
+        let mut nodes = affinity.node_ids.clone();
+        nodes.sort_unstable();
+        let ids = shards
+            .iter()
+            .enumerate()
+            .map(|(i, shard)| {
+                ShardId::from_slice(&shard.shard_id)
+                    .map(|id| (i, id))
+                    .map_err(|source| Error::Manifest { source })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // Evaluate rendezvous scores once per shard, not once per node's plan.
+        let mut groups = vec![Vec::new(); nodes.len()];
+        for (index, id) in ids {
+            let owner = crate::preferred_node(&id, affinity.affinity_seed, &nodes);
+            let node = nodes
+                .binary_search_by(|candidate| candidate.as_str().cmp(owner))
+                .expect("rendezvous owner is a member");
+            groups[node].push((index, id));
+        }
+        let mut counts = Vec::new();
+        for group in groups {
+            let order = assigned_shard_indices(
+                group,
+                shard_seed,
+                DistributedContext {
+                    rank: 0,
+                    world_size: 1,
+                    worker: 0,
+                    workers_per_rank: 1,
+                },
+            )?;
+            let mut local = vec![0_u64; affinity.local_world_size];
+            for (position, i) in order.into_iter().enumerate() {
+                let count = &mut local[position % affinity.local_world_size];
+                *count = count
+                    .checked_add(shards[i].record_count)
+                    .ok_or(Error::InvalidLimit {
+                        field: "record_count",
+                        reason: "rank record count overflows u64",
+                    })?;
+            }
+            counts.extend(local);
+        }
+        Ok(Self {
+            batches_per_rank: counts
+                .iter()
+                .map(|&n| {
+                    if drop_last {
+                        n / batch_size
+                    } else {
+                        n.div_ceil(batch_size)
+                    }
+                })
+                .collect(),
+            records_per_rank: counts,
+        })
+    }
+
     pub fn build(
         shards: &[proto::ShardMeta],
         shard_seed: u64,
@@ -81,6 +152,61 @@ impl EpochPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn affinity_plan_matches_reader_assignment_for_every_node_and_rank() {
+        let shards = (0..64_u8)
+            .map(|i| proto::ShardMeta {
+                shard_id: vec![i; 32],
+                record_count: u64::from(i) + 1,
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let mut affinity = crate::NodeAffinity {
+            node_id: "a".into(),
+            node_ids: vec!["c".into(), "a".into(), "b".into()],
+            local_rank: 0,
+            local_world_size: 2,
+            worker: 0,
+            workers_per_rank: 1,
+            affinity_seed: 19,
+        };
+        for seed in [0, 42, 99] {
+            let plan = EpochPlan::build_affinity(&shards, seed, &affinity, 7, false).unwrap();
+            let mut observed = Vec::new();
+            for node in ["a", "b", "c"] {
+                for rank in 0..2 {
+                    affinity.node_id = node.into();
+                    affinity.local_rank = rank;
+                    let indices = crate::affinity_assigned_shard_indices(
+                        shards
+                            .iter()
+                            .enumerate()
+                            .map(|(i, s)| (i, ShardId::from_slice(&s.shard_id).unwrap())),
+                        seed,
+                        &affinity,
+                    )
+                    .unwrap();
+                    observed.push(
+                        indices
+                            .into_iter()
+                            .map(|i| shards[i].record_count)
+                            .sum::<u64>(),
+                    );
+                }
+            }
+            assert_eq!(plan.records_per_rank, observed);
+            assert_eq!(
+                observed.iter().sum::<u64>(),
+                shards.iter().map(|s| s.record_count).sum::<u64>()
+            );
+            affinity.node_ids.reverse();
+            assert_eq!(
+                plan,
+                EpochPlan::build_affinity(&shards, seed, &affinity, 7, false).unwrap()
+            );
+        }
+    }
+
     #[test]
     fn detects_uneven_steps_even_with_drop_last() {
         let shards = [3, 9]

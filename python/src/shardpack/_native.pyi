@@ -45,9 +45,28 @@ class SamplePool:
 class LoaderCancellation:
     def cancel(self) -> None: ...
 
+class NodeAffinity:
+    def __init__(
+        self,
+        *,
+        node_id: str,
+        node_ids: list[str],
+        local_rank: int,
+        local_world_size: int,
+        seed: int = 0,
+    ) -> None: ...
+    @property
+    def world_size(self) -> int: ...
+
 class Dataset:
     def validate_epoch(
-        self, *, shard_seed: int, world_size: int, batch_size: int, drop_last: bool = False
+        self,
+        *,
+        shard_seed: int,
+        world_size: int,
+        batch_size: int,
+        drop_last: bool = False,
+        affinity: NodeAffinity | None = None,
     ) -> list[int]: ...
     def __init__(
         self,
@@ -91,6 +110,7 @@ class Dataset:
         encryption_key_id: str | None = None,
         encryption_key: bytes | None = None,
         encryption_key_path: str | PathLike[str] | None = None,
+        affinity: NodeAffinity | None = None,
     ) -> RecordLoader: ...
 
 class DatasetWriter:

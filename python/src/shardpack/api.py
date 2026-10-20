@@ -10,7 +10,7 @@ from typing import Any
 
 from ._native import Dataset as _NativeDataset
 from ._native import DatasetWriter as _NativeDatasetWriter
-from ._native import RecordLoader
+from ._native import NodeAffinity, RecordLoader
 from .config import ShardPackConfig
 
 Config = Mapping[str, Any] | ShardPackConfig
@@ -85,13 +85,20 @@ class Dataset:
         return self._native.records(**options)
 
     def validate_epoch(
-        self, *, shard_seed: int, world_size: int, batch_size: int, drop_last: bool = False
+        self,
+        *,
+        shard_seed: int,
+        world_size: int,
+        batch_size: int,
+        drop_last: bool = False,
+        affinity: NodeAffinity | None = None,
     ) -> list[int]:
         return self._native.validate_epoch(
             shard_seed=shard_seed,
             world_size=world_size,
             batch_size=batch_size,
             drop_last=drop_last,
+            affinity=affinity,
         )
 
 

@@ -7,6 +7,50 @@ from shardpack import Dataset, SamplePool, SamplePoolSource, ShardPackSource, Th
 DATA = Path(__file__).parent / "data"
 
 
+def test_wrapper_forwards_epoch_validation():
+    source = ShardPackSource(
+        (DATA / "layout-key.txt").read_text().strip(),
+        config={"stores": {"local": {"type": "filesystem", "root": DATA}}},
+        rank=0,
+        world_size=100,
+    )
+    loader = ThreadedLoader(
+        SamplePoolSource(source),
+        decode=lambda group: group,
+        batch_size=2,
+    )
+    with pytest.raises(RuntimeError, match="unequal or zero steps"):
+        list(loader)
+
+
+def test_wrapper_closes_upstream_and_forwards_cancel(records):
+    from threading import Event
+
+    calls = []
+
+    class Source:
+        def iter_with_stop(self, stop, *, batch_size, drop_last):
+            calls.append((stop, batch_size, drop_last))
+            try:
+                yield from records
+            finally:
+                calls.append("closed")
+
+        def cancel(self):
+            calls.append("cancel")
+
+    stop = Event()
+    wrapped = SamplePoolSource(Source(), max_records=4, max_bytes=100)
+    iterator = wrapped.iter_with_stop(stop, batch_size=3, drop_last=True)
+    next(iterator)
+    wrapped.cancel()
+    iterator.close()
+    assert calls == [(stop, 3, True), "cancel", "closed"]
+    stop.set()
+    assert list(wrapped.iter_with_stop(stop)) == []
+    assert len(calls) == 3
+
+
 @pytest.fixture
 def records():
     dataset = Dataset(

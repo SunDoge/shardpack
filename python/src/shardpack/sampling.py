@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from threading import Event
 from typing import Literal
 
 from ._native import Record, SamplePool
@@ -45,8 +46,41 @@ class SamplePoolSource:
         self.warmup = warmup
 
     def __iter__(self) -> Iterator[SampleGroup]:
+        return self.iter_with_stop(None)
+
+    def cancel(self) -> None:
+        """Forward cancellation through nested companion-selection wrappers."""
+        cancel = getattr(self.source, "cancel", None)
+        if cancel is not None:
+            cancel()
+
+    def iter_with_stop(
+        self,
+        stop: Event | None,
+        *,
+        batch_size: int | None = None,
+        drop_last: bool = False,
+    ) -> Iterator[SampleGroup]:
+        if stop is not None and stop.is_set():
+            return
+        upstream = getattr(self.source, "iter_with_stop", None)
+        iterator = (
+            upstream(stop, batch_size=batch_size, drop_last=drop_last)
+            if upstream is not None
+            else iter(self.source)
+        )
+        try:
+            yield from self._groups(iterator, stop)
+        finally:
+            close = getattr(iterator, "close", None)
+            if close is not None:
+                close()
+
+    def _groups(self, source: Iterator[Record], stop: Event | None) -> Iterator[SampleGroup]:
         pool = SamplePool(max_records=self.max_records, max_bytes=self.max_bytes, seed=self.seed)
-        for primary in self.source:
+        for primary in source:
+            if stop is not None and stop.is_set():
+                return
             exclusions = [primary.sample_id]
             available = pool.available(exclude_ids=exclusions)
             use_replacement = self.replace or (

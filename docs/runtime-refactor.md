@@ -1,4 +1,4 @@
-# Runtime refactor: first stage
+# Runtime refactor: identity, lifecycle and node affinity
 
 This pre-release refactor establishes trust/lifecycle boundaries and rejects
 unsafe distributed defaults. It does not change `.spk`, payload bytes, encryption,
@@ -56,8 +56,9 @@ Limits still requiring work:
   interruptible through that handle.
 - Arbitrary Python decode/collate callbacks cannot safely be force-killed;
   shutdown waits for running callbacks. This is not a universal bounded-time close.
-- Generic iterable sources and SamplePoolSource wrappers do not yet forward the
-  cancellation/epoch-planning protocol.
+- Generic iterable sources require their own cancellation integration.
+  SamplePoolSource now forwards cancellation, stop signals and batch/epoch
+  validation, and closes its upstream iterator on exit.
 - Breaking a loop does not close a retained iterator automatically; explicitly
   close retained iterators when abandoning them.
 
@@ -72,7 +73,7 @@ Python `Dataset.validate_epoch(...)` also rejects unequal final batch sizes
 unless `drop_last=True`. Equal-step planning alone cannot justify unweighted
 gradient averaging for unequal batch sizes.
 
-For a direct ShardPackSource, ThreadedLoader validates each multi-rank epoch
+For ShardPackSource, including SamplePoolSource wrappers, ThreadedLoader validates each multi-rank epoch
 using the actual scheduler-produced seed before reading shards/decoding.
 `drop_last` does not bypass unequal-step checks. Raw record/source iteration
 remains available without training constraints.
@@ -98,11 +99,67 @@ or adversarial replacement of ancestor directories.
 ## Remaining stages
 
 1. Explicit epoch balancing/truncation/repetition policies with coverage reports,
-   identity/topology-bound plans, Python node affinity and trainer-side agreement.
-2. Cancellation/deadlines through manifest resolution and source wrappers;
+   identity/topology-bound plans and trainer-side agreement. Python node affinity
+   is now connected; automatic balancing remains pending.
+2. Cancellation/deadlines through manifest resolution and arbitrary sources;
    disk-full and interrupted-cache integration coverage.
 3. Separate byte accounting for encoded admission, decoded results and final
    batches, with size estimation and an oversized-result policy. Arbitrary memory
    allocation inside user callbacks cannot be bounded by queue limits alone.
 4. Python training checkpoints and persistent GC job pins bound to the resolved
    identity and epoch plan; avoid a second independent Python scheduler.
+
+## Node affinity from Python
+
+`NodeAffinity` is a frozen native object, not another Python shard scheduler:
+
+```python
+from shardpack import NodeAffinity, ShardPackSource, ThreadedLoader
+
+affinity = NodeAffinity(
+    node_id="gpu-node-a", node_ids=["gpu-node-a", "gpu-node-b"],
+    local_rank=0, local_world_size=4, seed=42,
+)
+source = ShardPackSource(
+    layout_key, config=config, affinity=affinity,
+    cache_dir="/local/shared-node-cache",
+    expected_snapshot_id=trusted_snapshot_id,
+    expected_layout_id=trusted_layout_id,
+)
+loader = ThreadedLoader(source, decode=decode, batch_size=32)
+```
+
+All processes must agree on membership, layout, affinity seed and local world
+size (homogeneous nodes in this API). Each process supplies its actual stable
+node ID and local rank. The affinity seed is independent of epoch shuffle seeds.
+Membership list order does not change ownership; membership changes can move
+shards and require replanning.
+
+Affinity replaces global-rank assignment: do not also pass rank/world_size to
+ShardPackSource. RANK/WORLD_SIZE environment variables are ignored in affinity
+mode. Direct `Dataset.records(affinity=...)` requires legacy rank/world/worker
+options to remain at defaults. There is one source consumer per local rank,
+with independent parallel decode threads.
+
+Epochs shuffle shards within node ownership. Local ranks can exchange subsets
+between epochs, so share a cache directory between ranks on the same trusted
+node. A full warm cache needs capacity for that node's shard set; `cache_plan()`
+still reports a conservative whole-layout estimate.
+
+`EpochPlan::build_affinity` uses the reader's rendezvous ownership and ordering.
+Its counts are ordered by sorted node ID, then local rank—not the membership
+list order or the trainer's global rank numbering. Ownership is computed once
+per shard, not repeatedly for each local rank.
+`Dataset.validate_epoch(..., affinity=..., world_size=affinity.world_size)` checks
+this plan. ThreadedLoader performs the check automatically using its epoch seed.
+
+Affinity improves cache reuse, **not automatic balance**. Unequal ownership can
+still fail the equal-step/tail-batch guard. No samples are silently repeated or
+discarded. Raw source iteration remains available for inspection without these
+training constraints.
+
+Tests compare planner counts against every node/local-rank reader assignment,
+verify complete non-overlapping coverage, reorder membership and advance epochs,
+and confirm zero second-epoch shard downloads from node-local caches. A stalled
+local HTTP test covers cancellation through SamplePoolSource and ThreadedLoader.
+This is simulated topology coverage, not real multi-node NCCL training evidence.

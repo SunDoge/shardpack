@@ -1,7 +1,8 @@
 # Python SDK
 
 See [runtime refactor and migration notes](runtime-refactor.md) for trusted
-dataset IDs, resolve-once sources, cancellation and distributed epoch validation.
+dataset IDs, resolve-once sources, cancellation, `NodeAffinity`, and distributed
+epoch validation.
 
 For Mosaic/MixUp companion selection, see [SamplePool and SamplePoolSource](sample-pool.md).
 They reuse a bounded history of encoded records without changing primary coverage

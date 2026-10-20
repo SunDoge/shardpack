@@ -9,6 +9,70 @@ import shardpack
 DATA = Path(__file__).parent / "data"
 
 
+def test_node_affinity_coverage_cache_ownership_and_validation(monkeypatch, tmp_path):
+    config = {"stores": {"local": {"type": "filesystem", "root": DATA}}}
+    key = (DATA / "layout-key.txt").read_text().strip()
+    dataset = shardpack.Dataset(key, config=config)
+    expected = {r.sample_id for r in dataset.records()}
+    monkeypatch.setenv("RANK", "999")
+    monkeypatch.setenv("WORLD_SIZE", "1000")
+    previous = None
+    for epoch in (0, 1):
+        ownership = {}
+        all_ids = set()
+        for node in ("a", "b"):
+            local_ids = set()
+            for rank in (0, 1):
+                affinity = shardpack.NodeAffinity(
+                    node_id=node,
+                    node_ids=["a", "b"] if epoch == 0 else ["b", "a"],
+                    local_rank=rank,
+                    local_world_size=2,
+                    seed=7,
+                )
+                source = shardpack.ShardPackSource(
+                    key,
+                    config=config,
+                    affinity=affinity,
+                    epoch=epoch,
+                    shard_seed=42,
+                    cache_dir=tmp_path / node,
+                )
+                ids = {r.sample_id for r in source}
+                if epoch == 1:
+                    assert source.stats()["cache_downloaded_bytes"] == 0
+                    if ids:
+                        assert source.stats()["cache_hits"] > 0
+                assert local_ids.isdisjoint(ids)
+                local_ids.update(ids)
+                with pytest.raises(ValueError, match="replaces"):
+                    dataset.records(affinity=affinity, world_size=2)
+                with pytest.raises(ValueError, match="replaces"):
+                    shardpack.ShardPackSource(
+                        key, config=config, affinity=affinity, rank=0, world_size=4
+                    )
+            assert all_ids.isdisjoint(local_ids)
+            all_ids.update(local_ids)
+            ownership[node] = local_ids
+        assert all_ids == expected
+        if previous is not None:
+            assert ownership == previous
+        previous = ownership
+    with pytest.raises(RuntimeError, match="duplicate"):
+        shardpack.NodeAffinity(node_id="a", node_ids=["a", "a"], local_rank=0, local_world_size=1)
+
+
+def test_affinity_epoch_validation_uses_affinity_topology():
+    dataset = shardpack.Dataset(
+        (DATA / "layout-key.txt").read_text().strip(),
+        config={"stores": {"local": {"type": "filesystem", "root": DATA}}},
+    )
+    one = shardpack.NodeAffinity(node_id="a", node_ids=["a"], local_rank=0, local_world_size=1)
+    assert dataset.validate_epoch(shard_seed=42, world_size=1, batch_size=2, affinity=one) == [7]
+    with pytest.raises(ValueError, match="differs"):
+        dataset.validate_epoch(shard_seed=42, world_size=2, batch_size=2, affinity=one)
+
+
 def test_trusted_identity_and_source_resolution():
     config = {"stores": {"local": {"type": "filesystem", "root": DATA}}}
     layout = (DATA / "layout-key.txt").read_text().strip()
@@ -78,7 +142,8 @@ def test_distributed_loader_rejects_empty_rank_before_decode():
     assert decoded == []
 
 
-def test_cancel_interrupts_pending_http_read(monkeypatch):
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_cancel_interrupts_pending_http_read(monkeypatch, wrapped):
     from concurrent.futures import ThreadPoolExecutor
     from functools import partial
     from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -107,6 +172,31 @@ def test_cancel_interrupts_pending_http_read(monkeypatch):
     thread.start()
 
     def read():
+        if wrapped:
+            source = shardpack.ShardPackSource(
+                (DATA / "layout-key.txt").read_text().strip(),
+                config={
+                    "stores": {
+                        "local": {
+                            "type": "http",
+                            "base_url": f"http://127.0.0.1:{server.server_port}/",
+                        }
+                    }
+                },
+            )
+            groups = shardpack.SamplePoolSource(source)
+            handles.put(groups)
+            iterator = iter(
+                shardpack.ThreadedLoader(
+                    groups,
+                    decode=lambda group: group,
+                    batch_size=1,
+                )
+            )
+            try:
+                return next(iterator)
+            finally:
+                iterator.close()
         dataset = shardpack.Dataset(
             (DATA / "layout-key.txt").read_text().strip(),
             config={

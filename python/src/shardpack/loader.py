@@ -15,7 +15,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from ._native import EpochScheduler
+from ._native import EpochScheduler, NodeAffinity
 from ._stats import LoaderStats, measured
 from .api import Config, Dataset
 from .sampling import SamplePoolSource
@@ -66,6 +66,7 @@ class ShardPackSource:
         shard_seed: int = 0,
         rank: int | None = None,
         world_size: int | None = None,
+        affinity: NodeAffinity | None = None,
         cache_dir: str | PathLike[str] | None = None,
         cache_max_bytes: int = 256 * 1024**3,
         cache_mode: str = "ciphertext",
@@ -81,6 +82,9 @@ class ShardPackSource:
     ) -> None:
         if (rank is None) != (world_size is None):
             raise ValueError("rank and world_size must be provided together")
+        if affinity is not None and rank is not None:
+            raise ValueError("affinity replaces rank/world_size assignment")
+        self.affinity = affinity
         if (config is None) == (config_path is None):
             raise ValueError("exactly one of config or config_path is required")
         self.config = config
@@ -176,6 +180,9 @@ class ShardPackSource:
             handle.cancel()
 
     def _distributed_context(self) -> tuple[int, int]:
+        if self.affinity is not None:
+            # Native NodeAffinity owns node/local-rank topology, not RANK env.
+            return 0, self.affinity.world_size
         if self.rank is not None:
             assert self.world_size is not None
             return self.rank, self.world_size
@@ -202,6 +209,7 @@ class ShardPackSource:
                 world_size=world_size,
                 batch_size=batch_size,
                 drop_last=drop_last,
+                affinity=self.affinity,
             )
         records = dataset.records(
             cache_dir=self.cache_dir,
@@ -215,7 +223,8 @@ class ShardPackSource:
             epoch=epoch,
             shard_seed=shard_seed,
             rank=rank,
-            world_size=world_size,
+            world_size=world_size if self.affinity is None else 1,
+            affinity=self.affinity,
             worker=0,
             workers_per_rank=1,
             encryption_key_id=self.encryption_key_id,
@@ -346,7 +355,7 @@ class ThreadedLoader:
             raise
         finally:
             stop.set()
-            if isinstance(self.source, ShardPackSource):
+            if isinstance(self.source, (ShardPackSource, SamplePoolSource)):
                 self.source.cancel()
             producer.join()
             if stats is not None:
@@ -403,7 +412,7 @@ class ThreadedLoader:
                 self.source.iter_with_stop(
                     stop, batch_size=self.batch_size, drop_last=self.drop_last
                 )
-                if isinstance(self.source, ShardPackSource)
+                if isinstance(self.source, (ShardPackSource, SamplePoolSource))
                 else iter(self.source)
             )
             while not stop.is_set():
