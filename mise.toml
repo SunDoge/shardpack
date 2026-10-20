@@ -2,6 +2,7 @@
 protoc = "latest"
 zig = "0.15.2"
 "aqua:rust-cross/cargo-zigbuild" = "0.23.2"
+"cargo:release-plz" = "0.3.172"
 
 [tasks."test:glibc"]
 description = "Build the Linux CLI for glibc 2.17 and verify its symbol floor"

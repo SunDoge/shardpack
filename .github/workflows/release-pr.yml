@@ -1,0 +1,67 @@
+name: Prepare release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Product version (e.g. 0.1.0 or 0.2.0-rc.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-preparation
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - uses: jdx/mise-action@v3
+        with:
+          install_args: "cargo:release-plz"
+
+      - name: Prepare shared version, lockfiles, and changelog
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: python scripts/prepare-release.py "$RELEASE_VERSION"
+
+      - name: Create or update the release PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ steps.app.outputs.token }}
+          branch: release-plz-product
+          base: main
+          commit-message: "chore: release v${{ inputs.version }}"
+          title: "chore: release v${{ inputs.version }}"
+          body: |
+            Prepared with release-plz. Rust and Python share the Cargo workspace version.
+
+            Review CHANGELOG.md and CI before merging. Merging triggers a GitHub
+            release and the PyPI wheel/sdist workflow. No crates.io packages are published.
+          add-paths: |
+            Cargo.toml
+            Cargo.lock
+            crates/**/Cargo.toml
+            python/uv.lock
+            CHANGELOG.md

@@ -1,0 +1,53 @@
+[workspace]
+git_only = true
+publish = false
+release = false
+release_always = false
+semver_check = false
+changelog_update = false
+
+# One product version/tag for the workspace and Python distribution.
+# Python changes live outside this crate: prepare-release.py explicitly sets
+# the version and writes a repository-wide changelog before creating the PR.
+[[package]]
+name = "shardpack-python"
+release = true
+git_tag_name = "v{{ version }}"
+git_release_name = "ShardPack {{ version }}"
+changelog_path = "CHANGELOG.md"
+
+# set-version updates every inherited package's changelog. Share one file;
+# release remains disabled for these crates.
+[[package]]
+name = "shardpack-cli"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-cache"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-catalog"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-codec"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-config"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-core"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-format"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-gc"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-manifest"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-runtime"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-storage"
+changelog_path = "CHANGELOG.md"
