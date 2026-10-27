@@ -3,6 +3,12 @@
 The Python package is published by `.github/workflows/python-release.yml` using
 PyPI Trusted Publishing. No PyPI API token is stored in GitHub.
 
+Wheel and sdist builds use the SHA-pinned official
+[PyO3/maturin-action](https://github.com/PyO3/maturin-action). The wheel build
+enables sccache and explicitly enforces `manylinux_2_17` compatibility. Rust or
+Python code changes in pull requests trigger the same build/verification chain
+used for releases. Superseded PR runs are cancelled; release runs are not.
+
 ## Version ownership and automation
 
 `Cargo.toml` → `[workspace.package].version` is the single product version.
@@ -110,13 +116,14 @@ edits elsewhere before rerunning. Only prepare one release at a time.
 The tag starts two independent builds: one CPython 3.11+ abi3
 manylinux 2.17 x86-64 wheel and one source distribution. A separate job downloads
 the exact artifacts, runs strict metadata checks, installs the wheel under the
-minimum supported Python version, and exercises both CLI entry points. Only
+Python 3.11 and 3.14, and exercises both CLI entry points. Only
 those verified artifacts reach the `pypi` environment and the publish job.
 Tag, Cargo version, wheel/sdist metadata, and the installed native extension
 version are checked for consistency. Release PRs also build and verify artifacts
 without publishing.
 
-`workflow_dispatch` builds and verifies artifacts without publishing them. Use
+Only a pushed `v*` tag can publish. `workflow_dispatch` builds and verifies
+artifacts without publishing them, even when dispatched against a tag. Use
 it to validate workflow changes before creating a release tag. If PyPI publishing
 fails after a tag was created, rerun that tag's failed workflow; do not move the
 tag. Check whether any artifacts were already accepted before retrying.
