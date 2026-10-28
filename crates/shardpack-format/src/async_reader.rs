@@ -13,6 +13,7 @@ pub struct AsyncShardReader<R> {
     pending: VecDeque<Record>,
     fingerprint: ContentFingerprint,
     block_count: u32,
+    current_block_index: u32,
     records_yielded: u64,
     limits: ReaderLimits,
     byte_offset: u64,
@@ -73,6 +74,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             pending: VecDeque::new(),
             fingerprint: ContentFingerprint::default(),
             block_count: 0,
+            current_block_index: 0,
             records_yielded: 0,
             limits,
             byte_offset: SHARD_HEADER_SIZE as u64,
@@ -97,6 +99,13 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
         Self::from_block_boundary_with_key(input, limits, block_index, block_start_offset, None)
     }
 
+    /// Resumes a sequential read at a physical block boundary. The presence of
+    /// `decryption_key` selects the expected encryption mode because the shard
+    /// header is not re-read at a boundary: callers MUST pass `None` for
+    /// plaintext (including plaintext cache) objects, or the first block is
+    /// rejected as an encryption mismatch. Unlike
+    /// [`ShardReader::with_limits_and_key`], a key supplied for a plaintext
+    /// shard is not silently ignored.
     pub fn from_block_boundary_with_key(
         input: R,
         limits: ReaderLimits,
@@ -115,6 +124,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
             pending: VecDeque::new(),
             fingerprint: ContentFingerprint::default(),
             block_count: block_index,
+            current_block_index: block_index,
             records_yielded: 0,
             limits,
             byte_offset: block_start_offset,
@@ -202,7 +212,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
     #[must_use]
     pub const fn position(&self) -> AsyncReaderPosition {
         AsyncReaderPosition {
-            block_index: self.block_count.saturating_sub(1),
+            block_index: self.current_block_index,
             block_start_offset: self.current_block_start_offset,
             record_index: self.current_block_record_index,
             next_block_offset: self.byte_offset,
@@ -223,6 +233,7 @@ impl<R: AsyncRead + Unpin> AsyncShardReader<R> {
     async fn read_block(&mut self) -> Result<bool> {
         self.current_block_start_offset = self.byte_offset;
         self.current_block_record_index = 0;
+        self.current_block_index = self.block_count;
         let mut raw_header = [0; BLOCK_HEADER_SIZE];
         let read = self
             .input

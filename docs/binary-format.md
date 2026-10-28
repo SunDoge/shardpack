@@ -31,17 +31,17 @@ The header is followed immediately by zero or more blocks. There is no footer.
 
 | Offset | Size | Field |
 |---:|---:|---|
-| 0 | 8 | magic: `SPKBLK\0\0` |
-| 8 | 2 | block version (`1`) |
-| 10 | 2 | flags; bit 0 marks a jumbo block |
-| 12 | 4 | record count |
-| 16 | 4 | directory bytes |
-| 20 | 8 | stored body bytes |
-| 28 | 8 | raw payload bytes |
-| 36 | 1 | codec (`0=None`, `1=Zstd`) |
-| 37 | 1 | encryption (`0=None`, `1=AES-256-GCM`) |
-| 38 | 16 | per-shard key-derivation salt (zero when unencrypted) |
-| 54 | 2 | sequential block index used as nonce counter (zero when unencrypted) |
+| 0 | 6 | magic: `SPKBLK` |
+| 6 | 2 | block version (`1`) |
+| 8 | 2 | flags; bit 0 marks a jumbo block |
+| 10 | 4 | record count |
+| 14 | 4 | directory bytes |
+| 18 | 8 | stored body bytes |
+| 26 | 8 | raw payload bytes |
+| 34 | 1 | codec (`0=None`, `1=Zstd`) |
+| 35 | 1 | encryption (`0=None`, `1=AES-256-GCM`) |
+| 36 | 16 | per-shard key-derivation salt (zero when unencrypted) |
+| 52 | 4 | sequential block index used as nonce counter (zero when unencrypted) |
 | 56 | 4 | CRC32C of bytes `[0, 56)` |
 | 60 | 4 | CRC32C of the complete physical block body |
 
@@ -55,12 +55,17 @@ corruption detection before authenticated decryption.
 
 AES-GCM authenticates block-header bytes `[0, 56)` as associated data. A fresh
 128-bit salt is generated per shard. The supplied 256-bit master key and salt derive
-a per-shard AES key with BLAKE3's KDF mode; the 16-bit block counter constructs a
-nonce unique under that derived key. An encrypted shard is therefore limited to
-65,536 blocks (1 TiB with 16 MiB blocks), well above the recommended shard target.
-Every encrypted block repeats the same shard salt and its nonce counter MUST equal
-its zero-based block index. Readers reject salt changes, gaps, and repeated counters.
-The master key and key-management URI are never written into a shard.
+a per-shard AES key with BLAKE3's KDF mode; the 32-bit block counter constructs a
+nonce unique under that derived key. The counter's u32 width matches the u32 block
+index width: a shard can contain at most `u32::MAX` blocks, with zero-based
+indices `0..=u32::MAX - 1`. Writers and readers reject an additional block before
+the count would overflow, so the counter never wraps or repeats within a shard.
+Byte lengths and offsets are separately limited to `u64`. These integer bounds
+describe format capacity, not an AES-GCM per-key security usage budget.
+Every encrypted block repeats the same shard salt and its nonce
+counter MUST equal its zero-based block index. Readers reject salt changes, gaps,
+and repeated counters. The master key and key-management URI are never written
+into a shard.
 
 The exact key and nonce derivation is:
 
@@ -68,7 +73,7 @@ The exact key and nonce derivation is:
 key = BLAKE3.derive_key(
     context = "shardpack aes-256-gcm shard key v1",
     key_material = master_key[32] || salt[16])
-nonce = zero[10] || big_endian_u16(block_index)
+nonce = zero[8] || big_endian_u32(block_index)
 AAD = exact block_header[0..56]
 ```
 
@@ -149,6 +154,12 @@ Readers apply configurable limits before allocating directory, stored-payload, o
 raw-payload buffers. The default allows jumbo media records up to 8 GiB and at most
 one million records per block. Deployments should lower these limits to match their
 datasets.
+
+The writer applies no matching record-per-block cap: with 28-byte directory entries,
+a `target_block_bytes` above roughly 28 MiB can pack more than one million tiny
+records into a single block that default reader limits reject. Writers targeting
+such record densities must keep `target_block_bytes` within the limits their
+consumers will use.
 
 The authoritative v1 uncompressed golden vector lives at
 `crates/shardpack-format/tests/data/v1_none.hex`. The encrypted vector is

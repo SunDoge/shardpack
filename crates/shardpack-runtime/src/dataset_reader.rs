@@ -971,7 +971,7 @@ mod tests {
     use shardpack_format::{BlockCodec, ContentFingerprint, ShardWriter, WriterOptions};
     use shardpack_manifest::{layout_id, proto};
 
-    use super::{DatasetReader, IncompleteLayoutPolicy, RetryPolicy};
+    use super::{DatasetReader, IncompleteLayoutPolicy, LoaderCheckpoint, RetryPolicy};
     use crate::NodeAffinity;
     use crate::{DistributedContext, Error, NetworkPrefetch, RuntimeMetrics};
 
@@ -1728,6 +1728,122 @@ mod tests {
         }
         assert_eq!(remaining, vec![2, 3, 4, 5]);
         assert_eq!(cache.metrics().snapshot().hits, 2);
+    }
+
+    #[tokio::test]
+    async fn boundary_checkpoint_resumes_and_recheckpoints_without_drift() {
+        let root = tempfile::tempdir().unwrap();
+        let store = shardpack_storage::Store::filesystem(root.path()).unwrap();
+        // Two records per block: a checkpoint taken after block 0 sits exactly
+        // on block 1's header with record_index zero.
+        let mut writer = ShardWriter::new(
+            Vec::new(),
+            WriterOptions {
+                target_block_bytes: 62,
+                codec: BlockCodec::None,
+                zstd_level: 3,
+            },
+        )
+        .unwrap();
+        for value in 1..=6_u8 {
+            writer.add_record([value; 16], 0, &[value; 3]).unwrap();
+        }
+        let (bytes, summary) = writer.finish().unwrap();
+        assert_eq!(summary.block_count, 3);
+        let object_uri = "shards/boundary.spk";
+        store
+            .write_immutable(
+                object_uri,
+                Box::pin(stream::once(async move { Ok(Bytes::from(bytes.clone())) })),
+            )
+            .await
+            .unwrap();
+        let mut layout = proto::LayoutManifest {
+            snapshot_id: vec![7; 32],
+            builder_version: "test".into(),
+            recipe: Some(proto::LayoutRecipe {
+                target_shard_bytes: 1024,
+                target_block_bytes: 62,
+                block_codec: "none".into(),
+                shuffle_seed: None,
+                max_shard_bytes: None,
+            }),
+            portability: proto::Portability::SelfContained as i32,
+            durability: proto::Durability::Durable as i32,
+            total_records: summary.record_count,
+            total_bytes: summary.byte_size,
+            content_fingerprint: Some(proto_fingerprint(summary.content_fingerprint)),
+            shards: vec![proto::ShardMeta {
+                shard_id: summary.shard_id.to_vec(),
+                location: Some(proto::ObjectLocation {
+                    store_id: "default".into(),
+                    object_key: object_uri.into(),
+                }),
+                byte_size: summary.byte_size,
+                record_count: summary.record_count,
+                block_count: summary.block_count,
+                content_fingerprint: Some(proto_fingerprint(summary.content_fingerprint)),
+            }],
+            state: proto::LayoutState::Complete as i32,
+            ..Default::default()
+        };
+        layout.layout_id = layout_id(&layout).0.to_vec();
+
+        // Read the first block, then let the loader fetch block 1 so a
+        // checkpoint lands on the boundary with record index zero.
+        let mut reader = DatasetReader::new(store.clone(), layout.clone())
+            .unwrap()
+            .with_epoch_context(1, 0);
+        for value in 1..=2_u8 {
+            assert_eq!(
+                reader.next_record().await.unwrap().unwrap().sample_id[0],
+                value
+            );
+        }
+        assert_eq!(reader.next_record().await.unwrap().unwrap().sample_id[0], 3);
+        let boundary = reader.checkpoint();
+        assert_eq!(boundary.block_index, 1);
+        assert_eq!(boundary.record_index, 1);
+
+        // An externally persisted boundary checkpoint for block 1.
+        let persisted = LoaderCheckpoint {
+            snapshot_id: boundary.snapshot_id,
+            layout_id: boundary.layout_id,
+            epoch: boundary.epoch,
+            shard_seed: boundary.shard_seed,
+            next_shard_index: 1,
+            current_shard_id: Some(summary.shard_id),
+            records_yielded_in_current_shard: 2,
+            block_index: 1,
+            block_start_offset: boundary.block_start_offset,
+            record_index: 0,
+            distributed: None,
+            node_affinity: None,
+        };
+
+        let mut resumed = DatasetReader::resume(store.clone(), layout.clone(), &persisted)
+            .await
+            .unwrap();
+        // Re-checkpointing before the first record is delivered must return
+        // the same coordinates instead of drifting to the previous block.
+        assert_eq!(resumed.checkpoint(), persisted);
+        let mut remaining = Vec::new();
+        while let Some(record) = resumed.next_record().await.unwrap() {
+            remaining.push(record.sample_id[0]);
+        }
+        assert_eq!(remaining, vec![3, 4, 5, 6]);
+
+        // A checkpoint taken mid-resume also stays on the correct block.
+        let mut resumed = DatasetReader::resume(store, layout, &persisted)
+            .await
+            .unwrap();
+        assert_eq!(
+            resumed.next_record().await.unwrap().unwrap().sample_id[0],
+            3
+        );
+        let after = resumed.checkpoint();
+        assert_eq!(after.block_index, 1);
+        assert_eq!(after.record_index, 1);
     }
 
     #[tokio::test]

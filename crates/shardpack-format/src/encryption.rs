@@ -76,9 +76,12 @@ impl EncryptionKey {
     }
 }
 
-pub(crate) fn block_nonce(counter: u16) -> [u8; 12] {
+/// 96-bit AEAD nonce: 64 zero bits followed by the u32 block index in
+/// big-endian order. Counter space matches the u32 block-index space exactly,
+/// so uniqueness holds for every block a writer can emit without wraparound.
+pub(crate) fn block_nonce(counter: u32) -> [u8; 12] {
     let mut nonce = [0_u8; 12];
-    nonce[10..].copy_from_slice(&counter.to_be_bytes());
+    nonce[8..].copy_from_slice(&counter.to_be_bytes());
     nonce
 }
 

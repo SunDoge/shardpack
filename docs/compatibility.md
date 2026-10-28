@@ -12,6 +12,27 @@ Binary headers carry explicit format versions. Adding a codec does not change th
 container version, but changing framing, checksum coverage, or directory entry
 semantics does. Readers fail closed on unsupported versions.
 
+The block nonce counter was widened from 16 to 32 bits while v1 was unreleased
+(2026-10), freeing the two bytes by shortening the block magic from `SPKBLK\0\0`
+to `SPKBLK`. Block headers stay 64 bytes with the same CRC32C coverage over
+`[0, 56)`; block indices and counts remain u32 and byte lengths and offsets
+remain u64. Pre-widening nonempty shards, encrypted or not, are **rejected, not
+readable**. Their trailing magic NULs land in the new version field at offsets
+`6..8`, so a
+current reader decodes version `0` and fails with `UnsupportedVersion`, and a
+pre-widening reader rejects current shards at the block magic. No migration
+path is provided because v1 had not shipped; existing nonempty shards must be
+regenerated. Empty shards contain no block headers and are unaffected.
+Known v1 container constraints
+that would require a new format version to lift:
+
+- the record directory inside each block body is stored uncompressed, so
+  many-small-record datasets pay the full 28 bytes per entry even when the
+  payload compresses well;
+- there is no footer or terminal marker, so a shard truncated exactly at a
+  block boundary is indistinguishable from a complete shard without the
+  manifest's byte size and `ShardId`.
+
 Encrypted v1 requires an externally supplied key matching the layout manifest's
 `encryption.key_id`. The key is an authorization secret, not a canonical-data
 dependency: `SelfContained` still means no Lance rows, raw objects, annotation DB,

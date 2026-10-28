@@ -191,13 +191,10 @@ impl<W: Write> ShardWriter<W> {
         };
         let stored = compressed.as_deref().unwrap_or(&self.payload);
         let encrypted = self.encryption_key.is_some();
-        let nonce_counter = if encrypted {
-            u16::try_from(self.block_count).map_err(|_| crate::Error::InvalidRecord {
-                reason: "encrypted shard exceeds 65536 blocks",
-            })?
-        } else {
-            0
-        };
+        // The u32 counter covers the entire u32 block-index space; the
+        // block-count ceiling check above rejects u32::MAX before any
+        // wraparound, so the counter never repeats within a shard.
+        let nonce_counter = if encrypted { self.block_count } else { 0 };
         let body_bytes = self
             .directory
             .len()
@@ -487,25 +484,87 @@ mod tests {
     }
 
     #[test]
-    fn nonce_limit_applies_only_to_encrypted_shards() {
-        let beyond_nonce_space = u32::from(u16::MAX) + 1;
-        let mut plain = ShardWriter::new(Vec::new(), options()).unwrap();
-        plain.block_count = beyond_nonce_space;
-        plain.add_record([1; 16], 0, b"abcd").unwrap();
-        assert_eq!(
-            plain.finish().unwrap().1.block_count,
-            beyond_nonce_space + 1
-        );
-
+    fn nonce_counter_spans_the_full_u32_block_index_space() {
+        // The pre-widening u16 ceiling no longer binds encrypted shards.
+        let beyond_old_nonce_space = u32::from(u16::MAX) + 1;
         let mut encrypted =
             ShardWriter::new_encrypted(Vec::new(), options(), EncryptionKey::new([9; 32])).unwrap();
-        encrypted.block_count = beyond_nonce_space;
+        encrypted.block_count = beyond_old_nonce_space;
+        encrypted.add_record([1; 16], 0, b"abcd").unwrap();
+        assert_eq!(
+            encrypted.finish().unwrap().1.block_count,
+            beyond_old_nonce_space + 1
+        );
+
+        // Both layouts reject the u32 ceiling before writing, preventing
+        // counter wraparound.
+        for encrypted in [false, true] {
+            let mut writer = if encrypted {
+                ShardWriter::new_encrypted(Vec::new(), options(), EncryptionKey::new([3; 32]))
+                    .unwrap()
+            } else {
+                ShardWriter::new(Vec::new(), options()).unwrap()
+            };
+            writer.block_count = u32::MAX;
+            let bytes_before = writer.output.len();
+            assert!(matches!(
+                writer.add_record([1; 16], 0, b"abcd"),
+                Err(Error::InvalidRecord {
+                    reason: "shard contains too many blocks"
+                })
+            ));
+            assert_eq!(writer.output.len(), bytes_before);
+        }
+    }
+
+    #[tokio::test]
+    async fn encrypted_nonce_sequence_crosses_the_u16_boundary() {
+        let key = EncryptionKey::new([0x45; 32]);
+        let mut writer = ShardWriter::new_encrypted(
+            Vec::new(),
+            WriterOptions {
+                target_block_bytes: 1,
+                codec: BlockCodec::None,
+                zstd_level: 1,
+            },
+            key.clone(),
+        )
+        .unwrap();
+        // Seed the counter at the old u16 ceiling: blocks 65535, 65536 and
+        // 65537 exercise counters on both sides of the widened space.
+        writer.block_count = u32::from(u16::MAX);
+        for value in 1..=3_u8 {
+            writer.add_record([value; 16], 0, &[value; 1]).unwrap();
+        }
+        let (bytes, summary) = writer.finish().unwrap();
+        assert_eq!(summary.block_count, u32::from(u16::MAX) + 3);
+
+        // A sequential reader starting at block zero must still reject the
+        // counter mismatch instead of silently accepting shifted nonces.
+        let mut sequential =
+            ShardReader::new_encrypted(std::io::Cursor::new(&bytes), key.clone()).unwrap();
         assert!(matches!(
-            encrypted.add_record([1; 16], 0, b"abcd"),
-            Err(Error::InvalidRecord {
-                reason: "encrypted shard exceeds 65536 blocks"
+            sequential.next_record(),
+            Err(Error::InvalidBlockHeader {
+                reason: "encrypted block nonce is not its sequential block index"
             })
         ));
+
+        // Boundary resume at the seeded index validates every crossing block.
+        let mut resumed = crate::AsyncShardReader::from_block_boundary_with_key(
+            std::io::Cursor::new(&bytes[crate::SHARD_HEADER_SIZE..]),
+            crate::ReaderLimits::default(),
+            u32::from(u16::MAX),
+            crate::SHARD_HEADER_SIZE as u64,
+            Some(key),
+        );
+        for value in 1..=3_u8 {
+            let record = resumed.next_record().await.unwrap().unwrap();
+            assert_eq!(record.sample_id, [value; 16]);
+            assert_eq!(record.payload.as_ref(), &[value; 1]);
+        }
+        assert!(resumed.next_record().await.unwrap().is_none());
+        assert_eq!(resumed.block_count(), u32::from(u16::MAX) + 3);
     }
 
     #[test]
