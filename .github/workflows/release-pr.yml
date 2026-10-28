@@ -9,7 +9,8 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 concurrency:
   group: release-preparation
@@ -20,16 +21,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/create-github-app-token@v2
-        id: app
-        with:
-          app-id: ${{ vars.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ steps.app.outputs.token }}
 
       - uses: actions/setup-python@v6
         with:
@@ -49,7 +43,7 @@ jobs:
       - name: Create or update the release PR
         uses: peter-evans/create-pull-request@v7
         with:
-          token: ${{ steps.app.outputs.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           branch: release-plz-product
           base: main
           commit-message: "chore: release v${{ inputs.version }}"
@@ -57,8 +51,9 @@ jobs:
           body: |
             Prepared with release-plz. Rust and Python share the Cargo workspace version.
 
-            Review CHANGELOG.md and CI before merging. Merging triggers a GitHub
-            release and the PyPI wheel/sdist workflow. No crates.io packages are published.
+            Review CHANGELOG.md and CI before merging. Merging creates a GitHub
+            release; start the PyPI workflow manually on its version tag.
+            No crates.io packages are published.
           add-paths: |
             Cargo.toml
             Cargo.lock
