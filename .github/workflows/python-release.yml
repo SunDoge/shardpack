@@ -46,7 +46,7 @@ jobs:
           manylinux: "2_17"
           sccache: true
           working-directory: python
-          args: --release --locked --compatibility manylinux_2_17 --out dist
+          args: --release --locked --out dist
 
       - uses: actions/upload-artifact@v5
         with:
