@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <ShardPackRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))</ShardPackRoot>
+    <CargoManifest>$([System.IO.File]::ReadAllText('$(ShardPackRoot)/Cargo.toml'))</CargoManifest>
+    <Version>$([System.Text.RegularExpressions.Regex]::Match('$(CargoManifest)', '(?m)^version = &quot;([^&quot;]+)&quot;').Groups[1].Value)</Version>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

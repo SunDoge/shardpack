@@ -34,10 +34,13 @@ changelog_path = "CHANGELOG.md"
 name = "shardpack-config"
 changelog_path = "CHANGELOG.md"
 [[package]]
-name = "shardpack-core"
+name = "shardpack-dataset"
 changelog_path = "CHANGELOG.md"
 [[package]]
 name = "shardpack-format"
+changelog_path = "CHANGELOG.md"
+[[package]]
+name = "shardpack-ffi"
 changelog_path = "CHANGELOG.md"
 [[package]]
 name = "shardpack-gc"

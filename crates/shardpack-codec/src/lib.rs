@@ -38,7 +38,9 @@ pub enum Error {
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-pub trait Decoder<T>: Send + Sync + 'static {
+/// Decode schema-specific payload bytes. Sample identity and record flags are
+/// handled separately by the container and runtime pipeline.
+pub trait PayloadDecoder<T>: Send + Sync + 'static {
     type Error: std::fmt::Display;
     fn decode(&self, payload: Bytes) -> std::result::Result<T, Self::Error>;
 }
@@ -49,10 +51,10 @@ trait ErasedDecoder<T>: Send + Sync {
 
 impl<T, D> ErasedDecoder<T> for D
 where
-    D: Decoder<T>,
+    D: PayloadDecoder<T>,
 {
     fn decode(&self, payload: Bytes) -> std::result::Result<T, String> {
-        Decoder::decode(self, payload).map_err(|error| error.to_string())
+        PayloadDecoder::decode(self, payload).map_err(|error| error.to_string())
     }
 }
 
@@ -92,7 +94,7 @@ impl<T: 'static> CodecRegistry<T> {
         }
     }
 
-    pub fn register_embedded<D: Decoder<T>>(
+    pub fn register_embedded<D: PayloadDecoder<T>>(
         &mut self,
         name: impl Into<String>,
         version: u32,
@@ -109,14 +111,14 @@ impl<T: 'static> CodecRegistry<T> {
         decoder: D,
     ) -> Result<()>
     where
-        D: Decoder<T>,
+        D: PayloadDecoder<T>,
         I: IntoIterator<Item = [u8; 32]>,
     {
         let schemas = schema_ids.into_iter().collect::<BTreeSet<_>>();
         self.register(name, version, SchemaSupport::BuiltIn(schemas), decoder)
     }
 
-    fn register<D: Decoder<T>>(
+    fn register<D: PayloadDecoder<T>>(
         &mut self,
         name: impl Into<String>,
         version: u32,
@@ -234,11 +236,11 @@ fn hex_string(bytes: &[u8; 32]) -> String {
 mod tests {
     use bytes::Bytes;
 
-    use super::{CodecRegistry, Decoder, Error, schema_id_for};
+    use super::{CodecRegistry, Error, PayloadDecoder, schema_id_for};
     use shardpack_manifest::proto;
 
     struct Identity;
-    impl Decoder<Bytes> for Identity {
+    impl PayloadDecoder<Bytes> for Identity {
         type Error = std::convert::Infallible;
 
         fn decode(&self, payload: Bytes) -> std::result::Result<Bytes, Self::Error> {

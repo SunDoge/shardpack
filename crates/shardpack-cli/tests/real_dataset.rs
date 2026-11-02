@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use bytes::{BufMut, BytesMut};
-use shardpack_core::{
-    EncodedRecord, MaterializeOptions, Result as CoreResult, SourceReader, materialize_layout,
+use shardpack_dataset::{
+    EncodedRecord, MaterializeOptions, Result as DatasetResult, SourceReader, materialize_layout,
 };
 use shardpack_format::BlockCodec;
 use shardpack_runtime::DatasetReader;
@@ -91,7 +91,7 @@ impl OcrSource {
 }
 
 impl SourceReader for OcrSource {
-    fn next_record(&mut self) -> CoreResult<Option<EncodedRecord>> {
+    fn next_record(&mut self) -> DatasetResult<Option<EncodedRecord>> {
         let Some(record) = self.records.pop_front() else {
             return Ok(None);
         };
@@ -118,7 +118,7 @@ impl SourceReader for OcrSource {
 }
 
 impl SourceReader for ImageDirectorySource {
-    fn next_record(&mut self) -> CoreResult<Option<EncodedRecord>> {
+    fn next_record(&mut self) -> DatasetResult<Option<EncodedRecord>> {
         let Some(record) = self.records.pop_front() else {
             return Ok(None);
         };

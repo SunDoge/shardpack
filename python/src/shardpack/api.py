@@ -6,6 +6,7 @@ import json
 import os
 from collections.abc import Mapping
 from os import PathLike
+from types import TracebackType
 from typing import Any
 
 from ._native import Dataset as _NativeDataset
@@ -132,3 +133,21 @@ class DatasetWriter:
 
     def finish(self) -> str:
         return self._native.finish()
+
+    def abort(self) -> None:
+        """Stop without publishing a layout; already-admitted shards may remain."""
+        self._native.abort()
+
+    def __enter__(self) -> DatasetWriter:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if exc_type is None:
+            self.finish()
+        else:
+            self.abort()

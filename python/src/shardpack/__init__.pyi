@@ -1,4 +1,5 @@
 from os import PathLike
+from types import TracebackType
 
 from ._native import EpochScheduler as EpochScheduler
 from ._native import Record as Record
@@ -83,3 +84,11 @@ class DatasetWriter:
         flags: object | None = None,
     ) -> int: ...
     def finish(self) -> str: ...
+    def abort(self) -> None: ...
+    def __enter__(self) -> DatasetWriter: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...

@@ -2,7 +2,11 @@ use std::{
     ffi::{c_int, c_void},
     path::PathBuf,
     ptr,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
 };
 
@@ -15,9 +19,9 @@ use pyo3::{
     types::{PyAny, PyBytes, PyDict, PyMemoryView},
 };
 use shardpack_cache::{CacheMetrics, LocalCache};
-use shardpack_core::{
-    EncodedRecord as CoreEncodedRecord, MaterializeEncryption, MaterializeOptions,
-    Result as CoreResult, SourceReader, materialize_layout,
+use shardpack_dataset::{
+    MaterializeEncryption, MaterializeOptions, Result as DatasetResult, SourceReader,
+    materialize_layout,
 };
 use shardpack_format::BlockCodec;
 use shardpack_manifest::proto;
@@ -134,19 +138,32 @@ impl PyEpochScheduler {
 }
 
 struct BatchSource {
-    receiver: mpsc::Receiver<Vec<CoreEncodedRecord>>,
-    current: std::vec::IntoIter<CoreEncodedRecord>,
+    receiver: mpsc::Receiver<Vec<EncodedRecord>>,
+    current: std::vec::IntoIter<EncodedRecord>,
+    aborted: Arc<AtomicBool>,
 }
 
 impl SourceReader for BatchSource {
-    fn next_record(&mut self) -> CoreResult<Option<CoreEncodedRecord>> {
+    fn next_record(&mut self) -> DatasetResult<Option<EncodedRecord>> {
         loop {
+            if self.aborted.load(Ordering::Acquire) {
+                return Err(shardpack_dataset::Error::Source {
+                    message: "DatasetWriter aborted".into(),
+                });
+            }
             if let Some(record) = self.current.next() {
                 return Ok(Some(record));
             }
             match self.receiver.recv() {
                 Ok(batch) => self.current = batch.into_iter(),
-                Err(_) => return Ok(None),
+                Err(_) => {
+                    if self.aborted.load(Ordering::Acquire) {
+                        return Err(shardpack_dataset::Error::Source {
+                            message: "DatasetWriter aborted".into(),
+                        });
+                    }
+                    return Ok(None);
+                }
             }
         }
     }
@@ -159,7 +176,7 @@ enum WriterOutcome {
 }
 
 struct WriterState {
-    sender: Option<mpsc::SyncSender<Vec<CoreEncodedRecord>>>,
+    sender: Option<mpsc::SyncSender<Vec<EncodedRecord>>>,
     worker: Option<thread::JoinHandle<WriterOutcome>>,
     outcome: Option<WriterOutcome>,
 }
@@ -169,6 +186,7 @@ struct PyDatasetWriter {
     process_id: u32,
     max_batch_bytes: usize,
     max_batch_records: usize,
+    aborted: Arc<AtomicBool>,
     admission: Mutex<()>,
     state: Mutex<WriterState>,
 }
@@ -181,6 +199,37 @@ impl PyDatasetWriter {
             ));
         }
         Ok(())
+    }
+
+    fn stop(&self, py: Python<'_>, abort: bool) -> PyResult<WriterOutcome> {
+        self.check_process()?;
+        py.detach(|| {
+            let _admission = self.admission.lock().map_err(|_| {
+                PyRuntimeError::new_err("DatasetWriter admission lock was poisoned")
+            })?;
+            let mut state = self.state.lock().map_err(|_| {
+                PyRuntimeError::new_err("DatasetWriter state was poisoned by another thread")
+            })?;
+            if let Some(outcome) = &state.outcome {
+                return Ok(outcome.clone());
+            }
+            if abort {
+                self.aborted.store(true, Ordering::Release);
+            }
+            state.sender.take();
+            let worker = state.worker.take().ok_or_else(|| {
+                PyRuntimeError::new_err("DatasetWriter shutdown is already in progress")
+            })?;
+            drop(state);
+            let outcome = worker
+                .join()
+                .unwrap_or_else(|_| WriterOutcome::Failure("DatasetWriter worker panicked".into()));
+            let mut state = self.state.lock().map_err(|_| {
+                PyRuntimeError::new_err("DatasetWriter state was poisoned by another thread")
+            })?;
+            state.outcome = Some(outcome.clone());
+            Ok(outcome)
+        })
     }
 
     fn copy_u8_buffer(
@@ -299,6 +348,8 @@ impl PyDatasetWriter {
             ..Default::default()
         };
         let (sender, receiver) = mpsc::sync_channel(queue_batches);
+        let aborted = Arc::new(AtomicBool::new(false));
+        let worker_aborted = Arc::clone(&aborted);
         let worker = thread::Builder::new()
             .name("shardpack-python-writer".into())
             .spawn(move || {
@@ -312,6 +363,7 @@ impl PyDatasetWriter {
                 let mut source = BatchSource {
                     receiver,
                     current: Vec::new().into_iter(),
+                    aborted: worker_aborted,
                 };
                 match runtime.block_on(materialize_layout(
                     &mut source,
@@ -331,6 +383,7 @@ impl PyDatasetWriter {
             process_id: std::process::id(),
             max_batch_bytes,
             max_batch_records,
+            aborted,
             admission: Mutex::new(()),
             state: Mutex::new(WriterState {
                 sender: Some(sender),
@@ -413,7 +466,7 @@ impl PyDatasetWriter {
             let sample_id = sample_ids[id_start..id_start + 16]
                 .try_into()
                 .expect("validated sample ID buffer length");
-            records.push(CoreEncodedRecord {
+            records.push(EncodedRecord {
                 sample_id,
                 flags: flags[index],
                 payload: payload_data.slice(start..end),
@@ -437,7 +490,9 @@ impl PyDatasetWriter {
             let sender = state
                 .sender
                 .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("DatasetWriter is already finished"))?
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err("DatasetWriter is already finished or aborted")
+                })?
                 .clone();
             drop(state);
             sender
@@ -448,35 +503,14 @@ impl PyDatasetWriter {
     }
 
     fn finish(&self, py: Python<'_>) -> PyResult<String> {
-        self.check_process()?;
-        let outcome = py.detach(|| -> PyResult<WriterOutcome> {
-            let _admission = self.admission.lock().map_err(|_| {
-                PyRuntimeError::new_err("DatasetWriter admission lock was poisoned")
-            })?;
-            let mut state = self.state.lock().map_err(|_| {
-                PyRuntimeError::new_err("DatasetWriter state was poisoned by another thread")
-            })?;
-            if let Some(outcome) = &state.outcome {
-                return Ok(outcome.clone());
-            }
-            state.sender.take();
-            let worker = state.worker.take().ok_or_else(|| {
-                PyRuntimeError::new_err("DatasetWriter finish is already in progress")
-            })?;
-            drop(state);
-            let outcome = worker
-                .join()
-                .unwrap_or_else(|_| WriterOutcome::Failure("DatasetWriter worker panicked".into()));
-            let mut state = self.state.lock().map_err(|_| {
-                PyRuntimeError::new_err("DatasetWriter state was poisoned by another thread")
-            })?;
-            state.outcome = Some(outcome.clone());
-            Ok(outcome)
-        })?;
-        match outcome {
+        match self.stop(py, false)? {
             WriterOutcome::Success(key) => Ok(key),
             WriterOutcome::Failure(error) => Err(PyRuntimeError::new_err(error)),
         }
+    }
+
+    fn abort(&self, py: Python<'_>) -> PyResult<()> {
+        self.stop(py, true).map(|_| ())
     }
 }
 
@@ -652,7 +686,7 @@ impl PyDataset {
         expected_layout_id: Option<Vec<u8>>,
     ) -> PyResult<Self> {
         let identity = match (expected_snapshot_id, expected_layout_id) {
-            (Some(snapshot), Some(layout)) => Some(shardpack_core::DatasetIdentity {
+            (Some(snapshot), Some(layout)) => Some(shardpack_dataset::DatasetIdentity {
                 snapshot_id: shardpack_manifest::SnapshotId::from_slice(&snapshot)
                     .map_err(runtime_error)?,
                 layout_id: shardpack_manifest::LayoutId::from_slice(&layout)
@@ -677,7 +711,7 @@ impl PyDataset {
             .build()
             .map_err(runtime_error)?;
         let manifest = py
-            .detach(|| runtime.block_on(shardpack_core::load_layout(&manifest_store, &layout)))
+            .detach(|| runtime.block_on(shardpack_dataset::load_layout(&manifest_store, &layout)))
             .map_err(runtime_error)?;
         if let Some(identity) = identity {
             identity.verify(&manifest).map_err(runtime_error)?;

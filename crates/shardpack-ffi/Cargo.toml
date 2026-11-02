@@ -1,0 +1,21 @@
+[package]
+name = "shardpack-ffi"
+description = "Stream-based C ABI and generated .NET bindings for ShardPack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+shardpack-format = { path = "../shardpack-format" }
+snafu.workspace = true
+
+[build-dependencies]
+csbindgen = "1.9.6"
+
+[lints]
+workspace = true

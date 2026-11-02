@@ -29,6 +29,9 @@ impl ByteSize for bytes::Bytes {
     }
 }
 
+/// Pipeline stage that receives the complete record (including ID and flags)
+/// and returns an output with explicit memory accounting. Use
+/// `RegistryRecordDecoder` to adapt a payload-only codec registry.
 pub trait RecordDecoder: Send + Sync + 'static {
     type Output: ByteSize + Send + 'static;
     type Error: std::fmt::Display + Send + 'static;

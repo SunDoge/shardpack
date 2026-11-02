@@ -405,11 +405,6 @@ impl DatasetReader {
                     .await
                     .map_err(|source| Error::Format { source })?
                 {
-                    let record = EncodedRecord {
-                        sample_id: record.sample_id,
-                        flags: record.flags,
-                        payload: record.payload,
-                    };
                     self.metrics.record_read(record.payload.len());
                     return Ok(Some(record));
                 }

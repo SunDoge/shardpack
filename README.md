@@ -25,6 +25,10 @@ This repository is an early Rust MVP. The implemented vertical slice includes:
   bounded shard prefetch;
 - a repeatable `/data/rustfs` S3-compatible integration test harness.
 
+The [.NET SDK](dotnet/README.md), `SunDoge.ShardPack`, provides .NET 8+ stream-based
+shard readers and writers through csbindgen-generated Rust bindings, including
+None/Zstd compression and AES-256-GCM encryption.
+
 The Rust core intentionally has no Lance dependency. Python/Lance is the offline
 filtering, encoding and upload adapter. The Rust runtime owns streaming, cache,
 shuffle and epoch state; Python can add framework-neutral threaded native decode

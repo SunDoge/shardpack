@@ -1,0 +1,105 @@
+name: Publish NuGet package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag containing the .NET SDK (e.g. v0.1.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nuget-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify Linux x64 package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Verify release tag and SDK availability
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          test -f dotnet/src/SunDoge.ShardPack/SunDoge.ShardPack.csproj || { echo "The selected tag does not contain the .NET SDK."; exit 1; }
+          python scripts/check-nuget-release.py --tag "$RELEASE_TAG"
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.91"
+          cache: true
+          rustflags: ""
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Test SDK
+        run: dotnet run --project dotnet/tests/SunDoge.ShardPack.Tests -- .
+
+      - name: Pack Linux x64 SDK
+        run: dotnet pack dotnet/src/SunDoge.ShardPack -c Release -o dotnet/artifacts
+
+      - name: Verify NuGet identity and native assets
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python scripts/check-nuget-release.py --tag "$RELEASE_TAG" --dist dotnet/artifacts
+
+      - name: Test the packed SDK as a NuGet consumer
+        run: |
+          dotnet restore dotnet/tests/SunDoge.ShardPack.Tests -p:UsePackagedSdk=true --source "$PWD/dotnet/artifacts" --packages "$PWD/dotnet/artifacts/consumer-packages"
+          dotnet run --no-restore --project dotnet/tests/SunDoge.ShardPack.Tests -p:UsePackagedSdk=true -- .
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: nuget-linux-x64
+          path: dotnet/artifacts/*.nupkg
+          if-no-files-found: error
+
+  publish:
+    name: Publish to NuGet.org
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: nuget
+      url: https://www.nuget.org/packages/SunDoge.ShardPack
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: nuget-linux-x64
+          path: dist
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Check NuGet username configuration
+        env:
+          NUGET_USER: ${{ vars.NUGET_USER }}
+        run: test -n "$NUGET_USER" || { echo "Set the NUGET_USER repository variable to your NuGet.org profile username."; exit 1; }
+
+      - uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ vars.NUGET_USER }}
+
+      - name: Publish verified package
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: dotnet nuget push dist/*.nupkg --source https://api.nuget.org/v3/index.json

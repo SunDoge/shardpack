@@ -4,6 +4,9 @@ use bytes::Bytes;
 use shardpack_manifest::ShardId;
 use snafu::Snafu;
 
+/// Shared container record; no conversion is needed at dataset/runtime boundaries.
+pub use shardpack_format::Record as EncodedRecord;
+
 mod dataset_reader;
 mod epoch_plan;
 pub use epoch_plan::EpochPlan;
@@ -303,13 +306,6 @@ pub struct ShuffleLimits {
     /// small slice cannot pin an entire source block. Excludes record metadata,
     /// the currently supplied record, and records held by downstream consumers.
     pub max_bytes: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EncodedRecord {
-    pub sample_id: [u8; 16],
-    pub flags: u32,
-    pub payload: Bytes,
 }
 
 pub struct ShufflePool {

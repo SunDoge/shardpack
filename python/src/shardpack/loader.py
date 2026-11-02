@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
 from time import perf_counter
+from types import TracebackType
 from typing import Any
 
 from ._native import EpochScheduler, NodeAffinity
@@ -299,6 +300,7 @@ class ThreadedLoader:
         self.drop_last = drop_last
         self.enable_stats = enable_stats
         self._stats: LoaderStats | None = None
+        self._active_iterator: Iterator[Any] | None = None
 
     def stats(self) -> dict[str, Any]:
         """Detached CPU-side snapshot for the latest started iteration."""
@@ -310,6 +312,26 @@ class ThreadedLoader:
         if isinstance(self.source, (ShardPackSource, SamplePoolSource)):
             result["source"] = self.source.stats()
         return result
+
+    def __enter__(self) -> Iterator[Any]:
+        """Start iteration and guarantee cleanup when the training loop exits."""
+        if self._active_iterator is not None:
+            raise RuntimeError("ThreadedLoader context is already active")
+        self._active_iterator = iter(self)
+        return self._active_iterator
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        iterator = self._active_iterator
+        self._active_iterator = None
+        if iterator is not None:
+            close = getattr(iterator, "close", None)
+            if close is not None:
+                close()
 
     def __iter__(self) -> Iterator[Any]:
         stats = LoaderStats() if self.enable_stats else None

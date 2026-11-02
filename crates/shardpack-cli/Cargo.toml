@@ -9,12 +9,12 @@ rust-version.workspace = true
 name = "shardpack"
 path = "src/main.rs"
 [dependencies]
-clap.workspace = true
+usage-rs.workspace = true
 hex.workspace = true
 prost-types.workspace = true
 shardpack-catalog = { path = "../shardpack-catalog" }
 shardpack-config = { path = "../shardpack-config" }
-shardpack-core = { path = "../shardpack-core" }
+shardpack-dataset = { path = "../shardpack-dataset" }
 shardpack-format = { path = "../shardpack-format" }
 shardpack-gc = { path = "../shardpack-gc" }
 shardpack-manifest = { path = "../shardpack-manifest" }
