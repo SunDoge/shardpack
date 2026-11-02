@@ -8,6 +8,7 @@ on:
       - "crates/shardpack-ffi/**"
       - "crates/shardpack-format/**"
       - "dotnet/**"
+      - "scripts/*nuget*"
       - ".github/workflows/dotnet-ci.yml"
   push:
     branches: [main]
@@ -17,6 +18,7 @@ on:
       - "crates/shardpack-ffi/**"
       - "crates/shardpack-format/**"
       - "dotnet/**"
+      - "scripts/*nuget*"
       - ".github/workflows/dotnet-ci.yml"
   workflow_dispatch:
 

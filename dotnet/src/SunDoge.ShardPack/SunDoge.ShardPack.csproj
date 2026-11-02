@@ -3,7 +3,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PackageId>SunDoge.ShardPack</PackageId>
-    <Description>Sequential ShardPack streams backed by Rust, with Zstd and AES-256-GCM.</Description>
+    <Description>Linux x64 (.NET 8+) ShardPack streams backed by Rust, with Zstd and AES-256-GCM.</Description>
     <Authors>SunDoge</Authors>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/SunDoge/shardpack</RepositoryUrl>
