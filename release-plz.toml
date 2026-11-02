@@ -40,6 +40,9 @@ changelog_path = "CHANGELOG.md"
 name = "shardpack-format"
 changelog_path = "CHANGELOG.md"
 [[package]]
+name = "shardpack-ffi"
+changelog_path = "CHANGELOG.md"
+[[package]]
 name = "shardpack-gc"
 changelog_path = "CHANGELOG.md"
 [[package]]

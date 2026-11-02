@@ -1,0 +1,56 @@
+name: .NET CI
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/shardpack-ffi/**"
+      - "crates/shardpack-format/**"
+      - "dotnet/**"
+      - ".github/workflows/dotnet-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/shardpack-ffi/**"
+      - "crates/shardpack-format/**"
+      - "dotnet/**"
+      - ".github/workflows/dotnet-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dotnet-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.16.0
+        with:
+          toolchain: "1.91"
+          cache: true
+          rustflags: ""
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+      - name: Run generated-binding and streaming tests
+        run: dotnet run --project dotnet/tests/SunDoge.ShardPack.Tests -- .
+      - name: Build Linux x64 NuGet artifact
+        run: dotnet pack dotnet/src/SunDoge.ShardPack -c Release -o dotnet/artifacts
+      - name: Test the packed SDK as a NuGet consumer
+        run: |
+          dotnet restore dotnet/tests/SunDoge.ShardPack.Tests -p:UsePackagedSdk=true --source "$PWD/dotnet/artifacts" --packages "$PWD/dotnet/artifacts/consumer-packages"
+          dotnet run --no-restore --project dotnet/tests/SunDoge.ShardPack.Tests -p:UsePackagedSdk=true -- .
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dotnet-linux-x64
+          path: dotnet/artifacts/*.nupkg
+          if-no-files-found: error

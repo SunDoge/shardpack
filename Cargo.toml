@@ -8,6 +8,7 @@ members = [
     "crates/shardpack-config",
     "crates/shardpack-core",
     "crates/shardpack-format",
+    "crates/shardpack-ffi",
     "crates/shardpack-gc",
     "crates/shardpack-manifest",
     "crates/shardpack-python",
