@@ -31,7 +31,8 @@ for record in dataset.records(cache_dir="/local-nvme/shardpack"):
 ```
 
 The installed `shardpack` command and `python -m shardpack` execute the same
-native Rust CLI without shipping a duplicate binary.
+native `usage-rs` CLI without shipping a duplicate binary. Embedded callers can
+use `shardpack._native.cli_main(args)`, which returns the process-style exit code.
 
 Development uses `uv` and `maturin`:
 

@@ -3,7 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clap::{Parser, Subcommand, ValueEnum};
 use shardpack_catalog::Catalog;
 use shardpack_core::{
     ImportOptions, MaterializeOptions, import_shardpack_coordinated_with_registry, load_layout,
@@ -14,6 +13,7 @@ use shardpack_manifest::{LayoutId, SnapshotId, proto};
 use shardpack_runtime::{DatasetReader, IncompleteLayoutPolicy};
 use shardpack_storage::{S3Options, Store, StoreRegistry};
 use snafu::Snafu;
+use usage_rs::{Args, Cli, Subcommands, ValueEnum};
 
 #[derive(Debug, Snafu)]
 enum Error {
@@ -48,75 +48,62 @@ enum Error {
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "shardpack",
-    version,
-    about = "Operate immutable ShardPack datasets"
-)]
+/// Operate immutable ShardPack datasets.
+#[derive(Debug, Cli)]
+#[usage(bin = "shardpack", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     /// TOML configuration file. Defaults to SHARDPACK_CONFIG or the XDG path.
-    #[arg(long, global = true, env = "SHARDPACK_CONFIG")]
+    #[usage(long, global, env = "SHARDPACK_CONFIG")]
     config: Option<PathBuf>,
 
     /// Named store from the configuration file.
-    #[arg(long, global = true)]
+    #[usage(long, global)]
     store: Option<String>,
 
     /// Local OpenDAL filesystem root. Used when --s3-bucket is absent.
-    #[arg(long, global = true, conflicts_with = "s3_bucket")]
+    #[usage(long, global, conflicts = "--s3-bucket")]
     root: Option<PathBuf>,
 
     /// S3 or S3-compatible bucket.
-    #[arg(long, global = true, env = "SHARDPACK_S3_BUCKET")]
+    #[usage(long, global, env = "SHARDPACK_S3_BUCKET")]
     s3_bucket: Option<String>,
-    #[arg(long, global = true, env = "SHARDPACK_S3_ROOT")]
+    #[usage(long, global, env = "SHARDPACK_S3_ROOT")]
     s3_root: Option<String>,
-    #[arg(long, global = true, env = "SHARDPACK_S3_ENDPOINT")]
+    #[usage(long, global, env = "SHARDPACK_S3_ENDPOINT")]
     s3_endpoint: Option<String>,
-    #[arg(long, global = true, env = "AWS_REGION")]
+    #[usage(long, global, env = "AWS_REGION")]
     s3_region: Option<String>,
-    #[arg(long, global = true, env = "AWS_ACCESS_KEY_ID", hide_env_values = true)]
+    #[usage(long, global, env = "AWS_ACCESS_KEY_ID")]
     s3_access_key_id: Option<String>,
-    #[arg(
-        long,
-        global = true,
-        env = "AWS_SECRET_ACCESS_KEY",
-        hide_env_values = true
-    )]
+    #[usage(long, global, env = "AWS_SECRET_ACCESS_KEY")]
     s3_secret_access_key: Option<String>,
-    #[arg(long, global = true, env = "AWS_SESSION_TOKEN", hide_env_values = true)]
+    #[usage(long, global, env = "AWS_SESSION_TOKEN")]
     s3_session_token: Option<String>,
     /// Multipart upload part size in bytes (minimum 5 MiB).
-    #[arg(
+    #[usage(
         long,
-        global = true,
+        global,
         env = "SHARDPACK_S3_WRITE_CHUNK_BYTES",
-        default_value_t = 16 * 1024 * 1024
+        default = "16777216"
     )]
     s3_write_chunk_bytes: usize,
     /// Maximum concurrent multipart uploads for one object.
-    #[arg(
-        long,
-        global = true,
-        env = "SHARDPACK_S3_WRITE_CONCURRENCY",
-        default_value_t = 8
-    )]
+    #[usage(long, global, env = "SHARDPACK_S3_WRITE_CONCURRENCY", default = "8")]
     s3_write_concurrency: usize,
 
     /// Prefix for mutable catalog records.
-    #[arg(long, global = true)]
+    #[usage(long, global)]
     catalog_prefix: Option<String>,
 
-    #[command(subcommand)]
+    #[usage(subcommand)]
     command: Command,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 enum Command {
     /// Print the validated summary of one manifest.
     Inspect {
-        #[arg(value_enum)]
+        #[usage(value_enum)]
         kind: ManifestKind,
         key: String,
     },
@@ -125,93 +112,93 @@ enum Command {
     /// Sample encoded records and estimate whether block-level Zstd is worthwhile.
     AnalyzeCompression {
         layout_key: String,
-        #[arg(long, default_value_t = 10_000)]
+        #[usage(long, default = "10000")]
         sample_records: u64,
-        #[arg(long, default_value_t = 1_073_741_824)]
+        #[usage(long, default = "1073741824")]
         sample_bytes: u64,
         /// Override the layout recipe's target block size.
-        #[arg(long)]
+        #[usage(long)]
         target_block_bytes: Option<usize>,
-        #[arg(long, default_value_t = 1)]
+        #[usage(long, default = "1")]
         zstd_level: i32,
-        #[arg(long, default_value_t = 10.0)]
+        #[usage(long, default = "10.0")]
         minimum_savings_percent: f64,
     },
     /// Import existing shard objects into a durable standalone snapshot.
     Import {
-        #[arg(long)]
+        #[usage(long)]
         dataset_id: String,
-        #[arg(long)]
+        #[usage(long)]
         codec_name: String,
-        #[arg(long)]
+        #[usage(long)]
         codec_version: u32,
         /// 32-byte schema ID encoded as 64 hexadecimal characters.
-        #[arg(long)]
+        #[usage(long)]
         schema_id: String,
-        #[arg(long)]
+        #[usage(long)]
         embedded_schema_file: Option<PathBuf>,
-        #[arg(long)]
+        #[usage(long)]
         description: Option<String>,
-        #[arg(long, default_value = "snapshots")]
+        #[usage(long, default = "snapshots")]
         snapshot_prefix: String,
-        #[arg(long, default_value = "layouts")]
+        #[usage(long, default = "layouts")]
         layout_prefix: String,
-        #[arg(long, default_value_t = 1_073_741_824)]
+        #[usage(long, default = "1073741824")]
         target_shard_bytes: u64,
         /// Hard ceiling for non-jumbo shard objects.
-        #[arg(long)]
+        #[usage(long)]
         max_shard_bytes: Option<u64>,
-        #[arg(long, default_value_t = 16_777_216)]
+        #[usage(long, default = "16777216")]
         target_block_bytes: u64,
-        #[arg(long, value_enum, default_value_t = Codec::None)]
+        #[usage(long, value_enum, default = "none")]
         block_codec: Codec,
         /// Object keys in the selected store, or STORE_ID::OBJECT_KEY.
-        #[arg(required = true)]
+        #[usage(arg, required)]
         shards: Vec<String>,
     },
     /// Copy-on-write repack a layout, validate equivalence and switch preferred.
     Rebalance {
         layout_key: String,
-        #[arg(long)]
+        #[usage(long)]
         staging_directory: PathBuf,
-        #[arg(long, default_value = "shards")]
+        #[usage(long, default = "shards")]
         object_prefix: String,
-        #[arg(long, default_value = "layouts")]
+        #[usage(long, default = "layouts")]
         layout_prefix: String,
-        #[arg(long, default_value_t = 1_073_741_824)]
+        #[usage(long, default = "1073741824")]
         target_shard_bytes: u64,
         /// Hard ceiling for non-jumbo shard objects.
-        #[arg(long)]
+        #[usage(long)]
         max_shard_bytes: Option<u64>,
-        #[arg(long, default_value_t = 16_777_216)]
+        #[usage(long, default = "16777216")]
         target_block_bytes: usize,
-        #[arg(long, value_enum, default_value_t = Codec::None)]
+        #[usage(long, value_enum, default = "none")]
         block_codec: Codec,
-        #[arg(long, default_value_t = 3)]
+        #[usage(long, default = "3")]
         zstd_level: i32,
     },
     /// Persistently protect a layout from GC.
     Pin {
         pin_id: String,
         layout_key: String,
-        #[arg(long, value_enum, default_value_t = PinKind::Manual)]
+        #[usage(long, value_enum, default = "manual")]
         reason: PinKind,
         /// Optional Unix expiry time in seconds.
-        #[arg(long)]
+        #[usage(long)]
         expires_at: Option<i64>,
     },
     /// Remove a persistent layout pin.
     Unpin { pin_id: String },
     /// Inventory objects and print the GC deletion plan without deleting anything.
     GcPlan {
-        #[command(flatten)]
+        #[usage(flatten)]
         options: GcOptions,
     },
     /// Inventory and delete objects under the shared catalog barrier.
     GcApply {
-        #[command(flatten)]
+        #[usage(flatten)]
         options: GcOptions,
-        #[arg(long)]
+        #[usage(long)]
         yes: bool,
     },
 }
@@ -237,21 +224,21 @@ enum PinKind {
     Retention,
 }
 
-#[derive(Clone, Debug, clap::Args)]
+#[derive(Clone, Debug, Args)]
 struct GcOptions {
-    #[arg(long, default_value = "snapshots")]
+    #[usage(long, default = "snapshots")]
     snapshot_prefix: String,
-    #[arg(long, default_value = "layouts")]
+    #[usage(long, default = "layouts")]
     layout_prefix: String,
-    #[arg(long, default_value = "shards")]
+    #[usage(long, default = "shards")]
     shard_prefix: String,
-    #[arg(long, default_value_t = 604_800)]
+    #[usage(long, default = "604800")]
     grace_period_seconds: u64,
 }
 
 /// Run the command-line interface with an explicit argument vector.
 ///
-/// The first value is the program name. Diagnostics are printed using clap's
+/// The first value is the program name. Diagnostics are printed using usage-rs's
 /// normal stdout/stderr behavior and the process-compatible exit code is
 /// returned to the caller.
 pub fn main_from<I, T>(args: I) -> i32
@@ -259,14 +246,20 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(args) {
-        Ok(cli) => cli,
-        Err(error) => {
-            let code = error.exit_code();
-            let _ = error.print();
-            return code;
-        }
-    };
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let argv: Vec<_> = args.iter().skip(1).map(OsString::as_os_str).collect();
+    let cli =
+        match usage_rs::embedded::outcome(Cli::spec(), Cli::command(), &argv, Cli::parse_from) {
+            usage_rs::embedded::Outcome::Parsed(cli) => cli,
+            usage_rs::embedded::Outcome::Exit(exit) => {
+                if exit.stderr {
+                    eprint!("{}", exit.text);
+                } else {
+                    print!("{}", exit.text);
+                }
+                return exit.code;
+            }
+        };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -928,36 +921,37 @@ const fn timestamp(seconds: i64) -> prost_types::Timestamp {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use clap::Parser;
     use shardpack_format::{ShardWriter, WriterOptions};
+    use std::{ffi::OsStr, path::PathBuf};
 
     use super::{Cli, Codec, Command, CompressionAnalysis, analyze_block, run};
 
     #[test]
     fn parses_safe_gc_and_operational_commands() {
-        let cli = Cli::try_parse_from([
+        let argv = [
             "shardpack",
             "--root",
             "/tmp/data",
             "verify",
             "layouts/x.layout.pb",
-        ])
-        .unwrap();
+        ]
+        .map(OsStr::new);
+        let cli = Cli::parse_from(&argv[1..]).unwrap();
         assert!(matches!(cli.command, Command::Verify { .. }));
 
-        let cli = Cli::try_parse_from(["shardpack", "gc-apply", "--yes"]).unwrap();
+        let argv = ["shardpack", "gc-apply", "--yes"].map(OsStr::new);
+        let cli = Cli::parse_from(&argv[1..]).unwrap();
         assert!(matches!(cli.command, Command::GcApply { yes: true, .. }));
 
-        let cli = Cli::try_parse_from([
+        let argv = [
             "shardpack",
             "analyze-compression",
             "layouts/example.layout.pb",
             "--sample-records",
             "500",
-        ])
-        .unwrap();
+        ]
+        .map(OsStr::new);
+        let cli = Cli::parse_from(&argv[1..]).unwrap();
         assert!(matches!(
             cli.command,
             Command::AnalyzeCompression {

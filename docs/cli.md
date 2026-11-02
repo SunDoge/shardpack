@@ -1,5 +1,10 @@
 # ShardPack CLI
 
+The native CLI is defined with `usage-rs`. The Rust executable, the installed
+Python `shardpack` command, and `python -m shardpack` all use the same parser and
+operations. Python callers can also invoke `shardpack._native.cli_main(args)`;
+it accepts an argv list including the program name and returns the exit code.
+
 For persistent or multiple storage backends, use the typed TOML
 [configuration](configuration.md):
 
