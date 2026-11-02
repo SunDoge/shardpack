@@ -392,6 +392,33 @@ def test_buffer_writer_materializes_numpy_batches(tmp_path: Path) -> None:
     }
 
 
+def test_buffer_writer_aborts_exceptional_context_without_publishing(tmp_path: Path) -> None:
+    object_root = tmp_path / "objects"
+    config = {
+        "default_store": "local",
+        "stores": {"local": {"type": "filesystem", "root": object_root}},
+    }
+    writer = shardpack.DatasetWriter(bytes([0x63]) * 32, tmp_path / "staging", config=config)
+    with pytest.raises(ValueError, match="training failed"), writer:
+        writer.write_batch(
+            b"partial",
+            np.array([0, 7], dtype=np.uint64),
+            np.zeros((1, 16), dtype=np.uint8),
+        )
+        raise ValueError("training failed")
+
+    writer.abort()
+    with pytest.raises(RuntimeError, match="finished or aborted"):
+        writer.write_batch(
+            b"late",
+            np.array([0, 4], dtype=np.uint64),
+            np.zeros((1, 16), dtype=np.uint8),
+        )
+    with pytest.raises(RuntimeError, match="aborted"):
+        writer.finish()
+    assert not list(object_root.glob("layouts/*"))
+
+
 def test_buffer_writer_rejects_invalid_packed_batches(tmp_path: Path) -> None:
     config = tmp_path / "shardpack.toml"
     config.write_text(

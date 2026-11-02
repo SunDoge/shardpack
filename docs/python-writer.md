@@ -141,8 +141,23 @@ staging budget before allowing multiple completed shards in flight.
 `finish()` closes admission, joins the worker, validates aggregate
 record count and content fingerprint, then publishes the immutable layout. Any
 worker failure closes admission and is returned consistently by later writes and
-`finish()`. A layout is never published from a partial build; abandoned local or
-remote staging objects remain eligible for orphan cleanup.
+`finish()`. `abort()` closes admission, signals the record source, and joins the
+worker without publishing a layout. It is idempotent and does not replace a
+successful result if the writer had already finished.
+
+Use the writer as a context manager so exceptions abort rather than commit the
+records admitted so far. Normal exit calls `finish()`; exceptional exit calls
+`abort()`. Already-uploaded immutable shards may remain as orphans after an
+abort and are eligible for GC:
+
+```python
+with DatasetWriter(snapshot_id, staging_dir, config=config) as writer:
+    writer.write_batch(payload_data, offsets, sample_ids)
+layout_key = writer.finish()  # Optional: finish is idempotent.
+```
+
+Callers not using a context manager should explicitly call `abort()` on failure.
+Abandoned local or remote staging objects remain eligible for orphan cleanup.
 
 Direct streaming to the final S3 key is impossible with a content-addressed name
 because the full-byte BLAKE3 is unknown until EOF. A later diskless mode may upload

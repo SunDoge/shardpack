@@ -49,6 +49,32 @@ def test_stats_preserve_early_close():
     assert loader.stats()["batches_delivered"] == 1
 
 
+def test_context_closes_loader_when_training_body_fails():
+    worker_ids = set()
+    source_closed = False
+
+    def source():
+        nonlocal source_closed
+        worker_ids.add(threading.get_ident())
+        try:
+            yield from range(100)
+        finally:
+            source_closed = True
+
+    def decode(value):
+        worker_ids.add(threading.get_ident())
+        return value
+
+    loader = ThreadedLoader(source(), decode=decode, enable_stats=True)
+    with pytest.raises(ValueError, match="training failed"), loader as batches:
+        assert next(batches) == [0]
+        raise ValueError("training failed")
+
+    assert source_closed
+    assert loader.stats()["status"] == "closed"
+    assert not [thread for thread in threading.enumerate() if thread.ident in worker_ids]
+
+
 def test_stats_snapshot_is_bounded_detached_and_thread_safe():
     stats = LoaderStats()
 

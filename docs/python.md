@@ -245,6 +245,16 @@ loader = ThreadedLoader(
 )
 ```
 
+Use the loader as a context manager when a training loop can exit early. Normal
+and exceptional exits both close the active iterator, cancel native reads, and
+join producer/decode threads:
+
+```python
+with ThreadedLoader(source, decode=decode, batch_size=64) as batches:
+    for batch in batches:
+        train_step(batch)
+```
+
 With CuPy, keep decode and collation on CPU and create GPU arrays in the consumer
 thread:
 

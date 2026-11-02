@@ -59,6 +59,8 @@ pub trait RecordDecoder {
 pub enum Error {
     #[snafu(display("ShardPack format operation failed: {source}"))]
     Format { source: shardpack_format::Error },
+    #[snafu(display("record source failed: {message}"))]
+    Source { message: String },
     #[snafu(display("record codec failed: {message}"))]
     Codec { message: String },
     #[snafu(display(
