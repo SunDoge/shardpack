@@ -1,10 +1,13 @@
-//! Source-agnostic materialization and byte-preserving rebalance services.
+//! Immutable dataset snapshots, source-agnostic materialization, import,
+//! mirroring and byte-preserving rebalance services.
 
 use std::io::{Read, Write};
 
-use bytes::Bytes;
 use shardpack_format::{ContentFingerprint, ShardReader, ShardSummary, ShardWriter, WriterOptions};
 use snafu::Snafu;
+
+/// The same schema-agnostic record used by the container and training runtime.
+pub use shardpack_format::Record as EncodedRecord;
 
 mod import;
 mod materialize;
@@ -35,24 +38,8 @@ pub use snapshot::{
     resolve_dataset, snapshot_manifest_key,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EncodedRecord {
-    pub sample_id: [u8; 16],
-    pub flags: u32,
-    pub payload: Bytes,
-}
-
 pub trait SourceReader {
     fn next_record(&mut self) -> Result<Option<EncodedRecord>>;
-}
-
-pub trait RecordEncoder<T> {
-    fn encode(&self, sample: &T) -> Result<Bytes>;
-}
-
-pub trait RecordDecoder {
-    type Output;
-    fn decode(&self, bytes: Bytes) -> Result<Self::Output>;
 }
 
 #[derive(Debug, Snafu)]
@@ -61,8 +48,6 @@ pub enum Error {
     Format { source: shardpack_format::Error },
     #[snafu(display("record source failed: {message}"))]
     Source { message: String },
-    #[snafu(display("record codec failed: {message}"))]
-    Codec { message: String },
     #[snafu(display(
         "rebalance changed record count: source {source_count}, target {target_count}"
     ))]
@@ -116,13 +101,6 @@ impl<R: Read> SourceReader for ShardPackSource<R> {
     fn next_record(&mut self) -> Result<Option<EncodedRecord>> {
         self.reader
             .next_record()
-            .map(|record| {
-                record.map(|value| EncodedRecord {
-                    sample_id: value.sample_id,
-                    flags: value.flags,
-                    payload: value.payload,
-                })
-            })
             .map_err(|source| Error::Format { source })
     }
 }

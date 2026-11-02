@@ -1,7 +1,7 @@
 use bytes::Bytes;
-use shardpack_core::{
-    EncodedRecord, MaterializeEncryption, MaterializeOptions, Result as CoreResult, SourceReader,
-    materialize_layout,
+use shardpack_dataset::{
+    EncodedRecord, MaterializeEncryption, MaterializeOptions, Result as DatasetResult,
+    SourceReader, materialize_layout,
 };
 use shardpack_format::{BlockCodec, EncryptionKey};
 use shardpack_storage::Store;
@@ -9,7 +9,7 @@ use shardpack_storage::Store;
 struct Records(std::vec::IntoIter<EncodedRecord>);
 
 impl SourceReader for Records {
-    fn next_record(&mut self) -> CoreResult<Option<EncodedRecord>> {
+    fn next_record(&mut self) -> DatasetResult<Option<EncodedRecord>> {
         Ok(self.0.next())
     }
 }

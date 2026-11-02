@@ -62,7 +62,7 @@ class PreparationTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         files = {
             "Cargo.toml": """[workspace]
-members = ["crates/shardpack-python", "crates/shardpack-core"]
+members = ["crates/shardpack-python", "crates/shardpack-dataset"]
 resolver = "2"
 [workspace.package]
 version = "0.1.0"
@@ -75,12 +75,12 @@ edition = "2021"
 crate-type = ["cdylib"]
 """,
             "crates/shardpack-python/src/lib.rs": "pub fn placeholder() {}\n",
-            "crates/shardpack-core/Cargo.toml": """[package]
-name = "shardpack-core"
+            "crates/shardpack-dataset/Cargo.toml": """[package]
+name = "shardpack-dataset"
 version.workspace = true
 edition = "2021"
 """,
-            "crates/shardpack-core/src/lib.rs": "pub fn placeholder() {}\n",
+            "crates/shardpack-dataset/src/lib.rs": "pub fn placeholder() {}\n",
             "python/pyproject.toml": """[build-system]
 requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"

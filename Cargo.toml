@@ -6,7 +6,7 @@ members = [
     "crates/shardpack-catalog",
     "crates/shardpack-codec",
     "crates/shardpack-config",
-    "crates/shardpack-core",
+    "crates/shardpack-dataset",
     "crates/shardpack-format",
     "crates/shardpack-ffi",
     "crates/shardpack-gc",

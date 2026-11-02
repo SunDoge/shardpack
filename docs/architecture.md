@@ -17,10 +17,32 @@ dependency on Lance, S3, or a particular training framework.
 | `shardpack-manifest` | Authoritative protobuf manifests, typed IDs, validation and canonical ID derivation | storage implementations, Lance |
 | `shardpack-codec` | Typed decoder registry and portable schema compatibility validation | container framing, storage |
 | `shardpack-storage` | OpenDAL operator wrapper, immutable streaming writes and range reads | record codecs, manifests |
-| `shardpack-core` | Record codecs, source readers, materialization, rebalance and publication validation | training framework |
+| `shardpack-dataset` | Snapshot identity/resolution, source readers, materialization, import, mirror, rebalance and publication validation | training framework |
 | `shardpack-runtime` | Deterministic shard assignment, bounded encoded-record shuffle, checkpoints | Lance, record schema details |
 | `shardpack-catalog` | Append-only preferred-layout generations and persistent layout pins | record payload semantics |
+| `shardpack-cache` | Verified ciphertext/plaintext local caches and streaming cache fill | training frameworks, record schema details |
+| `shardpack-config` | Typed application configuration and store construction | dataset materialization, runtime scheduling |
+| `shardpack-gc` | Mark-and-sweep planning and durable last-copy protection | record payload semantics |
 | `shardpack-cli` | Thin operational frontend | private format implementation details |
+| `shardpack-python` | Python SDK and loader bindings | independent format implementations |
+| `shardpack-ffi` | C ABI and csbindgen-generated .NET bindings | manifests, storage backends, record schemas |
+
+`shardpack-dataset` replaces the pre-release `shardpack-core` name: it provides
+dataset operations, not primitives required by every crate. Update Rust imports
+to `shardpack_dataset`, Cargo dependencies to `shardpack-dataset`, and paths to
+`crates/shardpack-dataset`. No compatibility shim is maintained for the unpublished
+crate name. Python/.NET APIs and the binary format are unchanged.
+
+The canonical opaque record is `shardpack_format::Record`. Dataset and runtime
+re-export this exact type as `EncodedRecord`, so records pass between readers,
+sources and pipelines without conversion wrappers. There is no separate types
+crate. The old unused dataset `RecordEncoder`/`RecordDecoder` traits were removed.
+
+`shardpack-codec::PayloadDecoder<T>` decodes payload bytes under a registered
+schema; `shardpack_runtime::RecordDecoder` is a pipeline stage receiving a full
+record and producing a byte-accounted output. `RegistryRecordDecoder` adapts the
+former to the latter. These roles remain distinct. Codec stays independent so
+schema/decoder tooling does not pull in storage, cache or runtime dependencies.
 
 Rust core accepts an encoded record stream and has no Lance dependency. The
 Python SDK may scan Lance (or any Python data source), resolve raw assets, encode
@@ -65,19 +87,16 @@ buffer/sample contracts, not on ShardPack.
 ## Dependency direction
 
 ```text
-format        manifest        storage
-   \             |             /
-    +------------+------------+
-                 |
-                core
-                 |
-              runtime
-                 |
-                cli
+dataset -> format, manifest, storage, catalog
+runtime -> format, manifest, storage, cache
+           + codec   (pipeline feature)
+           + catalog (job-pin feature)
+cli     -> dataset, runtime, config, gc, catalog, format, manifest, storage
 ```
 
-`runtime` may consume core abstractions, but the persistent format does not know
-about runtime scheduling. The CLI composes crates; it contains no data semantics.
+Dataset operations and the training runtime are peers: neither depends on the
+other. Both consume the same format record type. The persistent format does not
+know about runtime scheduling. The CLI composes crates; it contains no data semantics.
 
 ## Binary format v1
 

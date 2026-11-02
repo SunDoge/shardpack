@@ -14,7 +14,7 @@ hex.workspace = true
 prost-types.workspace = true
 shardpack-catalog = { path = "../shardpack-catalog" }
 shardpack-config = { path = "../shardpack-config" }
-shardpack-core = { path = "../shardpack-core" }
+shardpack-dataset = { path = "../shardpack-dataset" }
 shardpack-format = { path = "../shardpack-format" }
 shardpack-gc = { path = "../shardpack-gc" }
 shardpack-manifest = { path = "../shardpack-manifest" }

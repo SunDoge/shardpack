@@ -118,11 +118,7 @@ impl AsyncSourceReader for ShardPackLayoutSource {
                     .await
                     .map_err(|source| Error::Format { source })?
                 {
-                    return Ok(Some(EncodedRecord {
-                        sample_id: record.sample_id,
-                        flags: record.flags,
-                        payload: record.payload,
-                    }));
+                    return Ok(Some(record));
                 }
                 self.validate_finished_shard()?;
                 self.current = None;

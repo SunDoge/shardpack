@@ -4,7 +4,7 @@ use std::{
 };
 
 use shardpack_catalog::Catalog;
-use shardpack_core::{
+use shardpack_dataset::{
     ImportOptions, MaterializeOptions, import_shardpack_coordinated_with_registry, load_layout,
     load_snapshot, rebalance_layout_transaction_with_registry,
 };
@@ -22,7 +22,7 @@ enum Error {
     #[snafu(display("storage initialization failed: {source}"))]
     Storage { source: shardpack_storage::Error },
     #[snafu(display("ShardPack operation failed: {source}"))]
-    Core { source: shardpack_core::Error },
+    Dataset { source: shardpack_dataset::Error },
     #[snafu(display("runtime verification failed: {source}"))]
     Runtime { source: shardpack_runtime::Error },
     #[snafu(display("catalog operation failed: {source}"))]
@@ -248,18 +248,18 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
     let argv: Vec<_> = args.iter().skip(1).map(OsString::as_os_str).collect();
-    let cli =
-        match usage_rs::embedded::outcome(Cli::spec(), Cli::command(), &argv, Cli::parse_from) {
-            usage_rs::embedded::Outcome::Parsed(cli) => cli,
-            usage_rs::embedded::Outcome::Exit(exit) => {
-                if exit.stderr {
-                    eprint!("{}", exit.text);
-                } else {
-                    print!("{}", exit.text);
-                }
-                return exit.code;
+    let cli = match usage_rs::embedded::outcome(Cli::spec(), Cli::command(), &argv, Cli::parse_from)
+    {
+        usage_rs::embedded::Outcome::Parsed(cli) => cli,
+        usage_rs::embedded::Outcome::Exit(exit) => {
+            if exit.stderr {
+                eprint!("{}", exit.text);
+            } else {
+                print!("{}", exit.text);
             }
-        };
+            return exit.code;
+        }
+    };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -359,7 +359,7 @@ async fn run(cli: Cli) -> Result<()> {
                 },
             )
             .await
-            .map_err(|source| Error::Core { source })?;
+            .map_err(|source| Error::Dataset { source })?;
             println!("snapshot={}", hex::encode(&imported.snapshot.snapshot_id));
             println!("snapshot_object={}", imported.snapshot_object_key);
             println!("layout={}", hex::encode(&imported.layout.layout_id));
@@ -379,7 +379,7 @@ async fn run(cli: Cli) -> Result<()> {
         } => {
             let source = load_layout(&store, &layout_key)
                 .await
-                .map_err(|source| Error::Core { source })?;
+                .map_err(|source| Error::Dataset { source })?;
             let options = MaterializeOptions {
                 store_id: storage.selected_store_id.clone(),
                 target_shard_bytes,
@@ -400,7 +400,7 @@ async fn run(cli: Cli) -> Result<()> {
                 &options,
             )
             .await
-            .map_err(|source| Error::Core { source })?;
+            .map_err(|source| Error::Dataset { source })?;
             println!(
                 "layout={}\nlayout_object={}",
                 hex::encode(&result.materialization.layout.layout_id),
@@ -416,7 +416,7 @@ async fn run(cli: Cli) -> Result<()> {
         } => {
             let layout = load_layout(&store, &layout_key)
                 .await
-                .map_err(|source| Error::Core { source })?;
+                .map_err(|source| Error::Dataset { source })?;
             catalog
                 .pin(proto::LayoutPin {
                     pin_id,
@@ -553,7 +553,7 @@ async fn inspect(store: &Store, kind: ManifestKind, key: &str) -> Result<()> {
         ManifestKind::Snapshot => {
             let value = load_snapshot(store, key)
                 .await
-                .map_err(|source| Error::Core { source })?;
+                .map_err(|source| Error::Dataset { source })?;
             let id = SnapshotId::from_slice(&value.snapshot_id)
                 .map_err(|source| Error::Manifest { source })?;
             println!(
@@ -572,7 +572,7 @@ async fn inspect(store: &Store, kind: ManifestKind, key: &str) -> Result<()> {
         ManifestKind::Layout => {
             let value = load_layout(store, key)
                 .await
-                .map_err(|source| Error::Core { source })?;
+                .map_err(|source| Error::Dataset { source })?;
             let id = LayoutId::from_slice(&value.layout_id)
                 .map_err(|source| Error::Manifest { source })?;
             println!(
@@ -596,7 +596,7 @@ async fn inspect(store: &Store, kind: ManifestKind, key: &str) -> Result<()> {
 async fn verify(registry: &StoreRegistry, store: &Store, layout_key: &str) -> Result<()> {
     let layout = load_layout(store, layout_key)
         .await
-        .map_err(|source| Error::Core { source })?;
+        .map_err(|source| Error::Dataset { source })?;
     let expected = layout.total_records;
     let shard_count = layout.shards.len();
     let total_bytes = layout.total_bytes;
@@ -672,7 +672,7 @@ async fn analyze_compression(
 
     let layout = load_layout(store, layout_key)
         .await
-        .map_err(|source| Error::Core { source })?;
+        .map_err(|source| Error::Dataset { source })?;
     let recipe_block_bytes = layout
         .recipe
         .as_ref()

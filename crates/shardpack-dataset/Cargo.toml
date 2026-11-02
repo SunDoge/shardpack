@@ -1,6 +1,6 @@
 [package]
-name = "shardpack-core"
-description = "Materialization and rebalance engine for ShardPack"
+name = "shardpack-dataset"
+description = "Immutable dataset snapshots, materialization, import, mirror and rebalance"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

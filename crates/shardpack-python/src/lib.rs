@@ -19,9 +19,9 @@ use pyo3::{
     types::{PyAny, PyBytes, PyDict, PyMemoryView},
 };
 use shardpack_cache::{CacheMetrics, LocalCache};
-use shardpack_core::{
-    EncodedRecord as CoreEncodedRecord, MaterializeEncryption, MaterializeOptions,
-    Result as CoreResult, SourceReader, materialize_layout,
+use shardpack_dataset::{
+    MaterializeEncryption, MaterializeOptions, Result as DatasetResult, SourceReader,
+    materialize_layout,
 };
 use shardpack_format::BlockCodec;
 use shardpack_manifest::proto;
@@ -138,16 +138,16 @@ impl PyEpochScheduler {
 }
 
 struct BatchSource {
-    receiver: mpsc::Receiver<Vec<CoreEncodedRecord>>,
-    current: std::vec::IntoIter<CoreEncodedRecord>,
+    receiver: mpsc::Receiver<Vec<EncodedRecord>>,
+    current: std::vec::IntoIter<EncodedRecord>,
     aborted: Arc<AtomicBool>,
 }
 
 impl SourceReader for BatchSource {
-    fn next_record(&mut self) -> CoreResult<Option<CoreEncodedRecord>> {
+    fn next_record(&mut self) -> DatasetResult<Option<EncodedRecord>> {
         loop {
             if self.aborted.load(Ordering::Acquire) {
-                return Err(shardpack_core::Error::Source {
+                return Err(shardpack_dataset::Error::Source {
                     message: "DatasetWriter aborted".into(),
                 });
             }
@@ -158,7 +158,7 @@ impl SourceReader for BatchSource {
                 Ok(batch) => self.current = batch.into_iter(),
                 Err(_) => {
                     if self.aborted.load(Ordering::Acquire) {
-                        return Err(shardpack_core::Error::Source {
+                        return Err(shardpack_dataset::Error::Source {
                             message: "DatasetWriter aborted".into(),
                         });
                     }
@@ -176,7 +176,7 @@ enum WriterOutcome {
 }
 
 struct WriterState {
-    sender: Option<mpsc::SyncSender<Vec<CoreEncodedRecord>>>,
+    sender: Option<mpsc::SyncSender<Vec<EncodedRecord>>>,
     worker: Option<thread::JoinHandle<WriterOutcome>>,
     outcome: Option<WriterOutcome>,
 }
@@ -466,7 +466,7 @@ impl PyDatasetWriter {
             let sample_id = sample_ids[id_start..id_start + 16]
                 .try_into()
                 .expect("validated sample ID buffer length");
-            records.push(CoreEncodedRecord {
+            records.push(EncodedRecord {
                 sample_id,
                 flags: flags[index],
                 payload: payload_data.slice(start..end),
@@ -686,7 +686,7 @@ impl PyDataset {
         expected_layout_id: Option<Vec<u8>>,
     ) -> PyResult<Self> {
         let identity = match (expected_snapshot_id, expected_layout_id) {
-            (Some(snapshot), Some(layout)) => Some(shardpack_core::DatasetIdentity {
+            (Some(snapshot), Some(layout)) => Some(shardpack_dataset::DatasetIdentity {
                 snapshot_id: shardpack_manifest::SnapshotId::from_slice(&snapshot)
                     .map_err(runtime_error)?,
                 layout_id: shardpack_manifest::LayoutId::from_slice(&layout)
@@ -711,7 +711,7 @@ impl PyDataset {
             .build()
             .map_err(runtime_error)?;
         let manifest = py
-            .detach(|| runtime.block_on(shardpack_core::load_layout(&manifest_store, &layout)))
+            .detach(|| runtime.block_on(shardpack_dataset::load_layout(&manifest_store, &layout)))
             .map_err(runtime_error)?;
         if let Some(identity) = identity {
             identity.verify(&manifest).map_err(runtime_error)?;

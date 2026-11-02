@@ -2179,7 +2179,7 @@ dependencies = [
  "prost-types",
  "shardpack-catalog",
  "shardpack-config",
- "shardpack-core",
+ "shardpack-dataset",
  "shardpack-format",
  "shardpack-gc",
  "shardpack-manifest",
@@ -2215,7 +2215,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "shardpack-core"
+name = "shardpack-dataset"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -2304,7 +2304,7 @@ dependencies = [
  "shardpack-cache",
  "shardpack-cli",
  "shardpack-config",
- "shardpack-core",
+ "shardpack-dataset",
  "shardpack-format",
  "shardpack-manifest",
  "shardpack-runtime",

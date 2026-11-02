@@ -1,8 +1,8 @@
 use bytes::Bytes;
 use shardpack_catalog::Catalog;
-use shardpack_core::{
-    EncodedRecord, MaterializeEncryption, MaterializeOptions, Result as CoreResult, SourceReader,
-    materialize_layout, rebalance_layout_transaction,
+use shardpack_dataset::{
+    EncodedRecord, MaterializeEncryption, MaterializeOptions, Result as DatasetResult,
+    SourceReader, materialize_layout, rebalance_layout_transaction,
 };
 use shardpack_format::{
     BLOCK_HEADER_SIZE, BlockCodec, BlockHeader, EncryptionKey, SHARD_HEADER_SIZE,
@@ -13,7 +13,7 @@ use shardpack_storage::{S3Options, Store};
 struct Records(std::vec::IntoIter<EncodedRecord>);
 
 impl SourceReader for Records {
-    fn next_record(&mut self) -> CoreResult<Option<EncodedRecord>> {
+    fn next_record(&mut self) -> DatasetResult<Option<EncodedRecord>> {
         Ok(self.0.next())
     }
 }
