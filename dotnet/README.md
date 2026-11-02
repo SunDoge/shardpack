@@ -29,8 +29,8 @@ choose its byte order; the SDK does not implicitly convert GUIDs.
 
 Any readable/writable synchronous `Stream` works, including non-seekable streams.
 For HTTP, supply a streaming response body (for example `HttpClient` with
-`ResponseHeadersRead`); for S3 use the stream supplied by your S3 SDK. These calls
-are synchronous and do not provide async prefetch. The initial .NET SDK exposes
+`ResponseHeadersRead`); for S3 use the stream supplied by your S3 SDK. Individual reader/writer calls remain synchronous; the bounded DataLoader below
+runs reading and decoding on a fixed number of background workers. The initial .NET SDK exposes
 individual shard containers; dataset manifests, cache, scheduling, shuffling and
 cloud authentication are not yet wrapped.
 
@@ -62,3 +62,52 @@ workspace. `dotnet pack` currently bundles **only the build machine's native RID
 it does not build a universal package. Linux x64 is tested in CI. The native
 library inherits the host compiler/libc requirements; no manylinux/glibc 2.17
 guarantee is made for this NuGet package. NuGet publishing is not automated yet.
+
+
+## Pooled records and bounded DataLoader
+
+`ShardReader.ReadPooled()` returns a disposable `PooledShardRecord` backed by
+`MemoryPool<byte>`. Its payload is copied once from native memory and remains
+valid across later reads. Dispose it when decoding has finished. `Read()` keeps
+its original owned `byte[]` behavior. Both implement `IShardRecord`.
+
+```csharp
+var loader = new DataLoader<Sample, Batch>(
+    ct => ShardSource.ReadPooledFiles(paths),
+    (record, ct) => Decode(record, ct),
+    (samples, ct) => Collate(samples, ct),
+    new() {
+        BatchSize = 8, DecodeWorkers = 4,
+        PrefetchRecords = 8, PrefetchBatches = 2,
+        ShuffleCapacity = 64, Seed = 42
+    });
+await foreach (var batch in loader.ReadEpochAsync(epoch: 0, cancellationToken: ct))
+    using (batch) await ConsumeAsync(batch, ct);
+```
+
+Decode borrows the input record until return. Collate borrows decoded samples
+until return. The loader releases disposable input records after decoding and
+disposable samples after collation; the batch must own/copy retained data. Consumers
+own yielded batches. Samples and batches can use `IMemoryOwner<T>` pools. Cleanup
+on errors, cancellation or early exit joins workers and releases queued leases;
+no recursive disposal of arbitrary collections is performed.
+
+One global in-flight record bound includes work queued for decoding and decoded
+results waiting for source order, so a stalled early decode cannot grow the
+reorder buffer indefinitely. Shuffle and batch queues have separate bounded
+capacities. Native block memory and decoder working sets are additional; use
+ReaderLimits for native block limits. Decoder completion order never changes the
+seeded shuffled sample order. Key augmentation randomness by sample identity and
+epoch, not shared worker scheduling, when reproducibility matters.
+
+`asyncSource.Prefetch(capacity, ct)` composes another bounded stage, such as GPU
+upload. Its bound includes the in-flight preparation call and queued items;
+disposable items transfer to consumers on yield, and abandoned items are released.
+This composes with Rxla's `UploadBatchAsync` / `RunUploadedAsync` without either
+SDK depending on the other. A typical pipeline decodes batch n+1 and uploads a
+prepared batch while a previous device execution is awaited.
+
+Cancellation stops queued/cooperative work. An already blocked synchronous
+Stream.Read cannot be interrupted by a token alone; the stream must return or
+provide its own timeout. The loader does not implement cloud authentication,
+dataset manifests or async native stream callbacks.

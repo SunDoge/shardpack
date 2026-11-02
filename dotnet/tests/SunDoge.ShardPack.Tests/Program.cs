@@ -127,6 +127,7 @@ using (var writer = new ShardWriter(stream, new() { TargetBlockBytes = 1 }, leav
     var error = Throws<ShardPackException>(() => writer.Write(id, "reentrant"u8));
     Assert(error.InnerException is InvalidOperationException);
 }
+await DataLoaderChecks.Run();
 Console.WriteLine("All ShardPack .NET interoperability tests passed.");
 
 sealed class ChunkedStream(byte[] bytes) : Stream
