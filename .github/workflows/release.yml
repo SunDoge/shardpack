@@ -6,7 +6,7 @@ on:
 
 permissions:
   contents: write
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: release-product
@@ -28,3 +28,7 @@ jobs:
         env:
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: release-plz release
+
+  prepare:
+    needs: release
+    uses: ./.github/workflows/release-pr.yml

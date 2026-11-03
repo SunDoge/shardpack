@@ -22,10 +22,18 @@ The pinned release-plz CLI is managed by mise. `release-plz.toml` uses
 `git_only = true`: **nothing is published to crates.io**, and only
 `shardpack-python` anchors the shared `vX.Y.Z` tag and GitHub Release.
 
-Release preparation deliberately takes an explicit version. release-plz's
-automatic change detection is Cargo-package-scoped and does not reliably cover
-the sibling `python/` tree. We use `release-plz set-version` plus a repository-wide
-changelog, then `create-pull-request` to open a `release-plz-product` branch.
+Every push to `main` first runs release-plz release, then calls the reusable
+**Prepare release PR** workflow. Preparation uses all repository commits, including
+Python-only and .NET-only changes. It defaults to the current version for the
+initial release and a patch increment after a stable release. After a prerelease,
+it defaults to the corresponding stable version. With no unreleased commits,
+preparation skips without changing files.
+
+We use `release-plz set-version` plus a repository-wide changelog, then
+`create-pull-request` to open or update the `release-plz-product` branch. An open
+PR's higher version is preserved during automatic updates. Run **Prepare release
+PR** manually on `main` with an explicit version to choose a minor, major, or
+prerelease version; leaving it blank uses automatic selection.
 `release-plz release` recognizes this prefix with `release_always = false`;
 ordinary pushes to main do not release.
 
@@ -42,8 +50,9 @@ GitHub Actions to create and approve pull requests**, and save. Repository or
 organization policy must also permit the workflow's requested `contents: write`
 and `pull-requests: write` permissions.
 
-GitHub-created PRs can require a user with write access to select **Approve
-workflows to run** before their checks start. Tags pushed with `GITHUB_TOKEN`
+PRs created with `GITHUB_TOKEN` do not automatically trigger other workflows.
+If checks do not start, close and reopen the PR using your account to trigger
+them before merging. Tags pushed with `GITHUB_TOKEN`
 do not trigger the Python workflow: start it manually after the release. See
 [GitHub's workflow-trigger rules](https://docs.github.com/en/actions/concepts/security/github_token).
 
@@ -90,13 +99,15 @@ the narrowly scoped `id-token: write` permission.
    mise run build:python
    ```
 
-2. In Actions, run **Prepare release PR** on `main`, entering `0.1.0` for the
-   initial release or a newer version afterward. Supported prereleases are
+2. Merge an ordinary PR into `main` and wait for **Release product** to create
+   or update the Release PR automatically. To override its version, manually run
+   **Prepare release PR** on `main` with the desired version. Supported prereleases are
    `X.Y.Z-alpha.N`, `X.Y.Z-beta.N`, and `X.Y.Z-rc.N`. Build metadata is rejected.
 3. Review the generated version/lock changes and `CHANGELOG.md`. Changelog entries
    cover all non-merge commits since the last reachable release tag, including
    Python-only fixes. Edit the notes on the PR if needed.
-4. If GitHub requests it, approve the PR's workflows. Wait for CI, then merge
+4. If checks have not started, close and reopen the bot PR using your account.
+   Wait for CI, then merge
    the PR. **Release product** creates the shared tag and GitHub Release.
 5. Wait for **Release product** to succeed. In Actions, run **Publish Python
    package** and select the new version tag (for example `v0.1.0`) in the ref
@@ -111,7 +122,7 @@ mise exec -- python3 scripts/prepare-release.py 0.1.0
 ```
 
 Do not run `release-plz release-pr` directly: it can miss Python-only changes.
-Repeated dispatch updates the same PR and regenerates its notes, so retain manual
+Automatic runs and repeated dispatch update the same PR and regenerates its notes, so retain manual
 edits elsewhere before rerunning. Only prepare one release at a time.
 
 The manual run on a version tag starts two independent builds: one CPython 3.11+ abi3
@@ -133,7 +144,7 @@ were already accepted before retrying.
 Automation regression tests (isolated temporary Git repositories, no publishing):
 
 ```bash
-mise exec -- python3 -m unittest discover -s scripts -p test_release.py -v
+mise exec -- python3 -m unittest discover -s scripts -p 'test*release.py' -v
 ```
 
 ## Scope of the first release
