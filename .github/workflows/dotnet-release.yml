@@ -2,17 +2,12 @@ name: Publish NuGet package
 
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing release tag containing the .NET SDK (e.g. v0.1.1)"
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: nuget-release-${{ inputs.tag }}
+  group: nuget-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -21,9 +16,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Require a release tag
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          case "$RELEASE_REF" in
+            refs/tags/v*) ;;
+            *) echo "Select a release tag (e.g. v0.1.1) under Use workflow from."; exit 1 ;;
+          esac
+
       - uses: actions/checkout@v6
         with:
-          ref: refs/tags/${{ inputs.tag }}
           persist-credentials: false
 
       - uses: actions/setup-python@v6
@@ -32,7 +35,7 @@ jobs:
 
       - name: Verify release tag and SDK availability
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           test -f dotnet/src/SunDoge.ShardPack/SunDoge.ShardPack.csproj || { echo "The selected tag does not contain the .NET SDK."; exit 1; }
           python scripts/check-nuget-release.py --tag "$RELEASE_TAG"
@@ -55,7 +58,7 @@ jobs:
 
       - name: Verify NuGet identity and native assets
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: python scripts/check-nuget-release.py --tag "$RELEASE_TAG" --dist dotnet/artifacts
 
       - name: Test the packed SDK as a NuGet consumer
