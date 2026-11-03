@@ -31,7 +31,7 @@ In GitHub repository settings:
    your NuGet.org profile username, **not your email address**. This is a repository
    variable, not a secret or GitHub username unless your names happen to match.
 2. Under **Environments**, create `nuget`. Configure reviewers if desired and
-   permit the branch used to manually run the workflow (normally `main`).
+   permit release tags (`v*`) used to manually run the workflow.
 
 The publish job uses `NuGet/login@v1` and `id-token: write` to exchange its GitHub
 OIDC token for a short-lived NuGet API key immediately before uploading. Neither
@@ -43,10 +43,9 @@ a GitHub App nor a PAT is required. See [NuGet Trusted Publishing](https://learn
    its validation script. If using release-plz, wait for its GitHub release to
    finish. The old Python-only `v0.1.0` tag does not contain the .NET SDK; choose
    a new product version containing these changes instead of moving that tag.
-2. Open **Actions → Publish NuGet package → Run workflow**. Leave the workflow
-   branch on `main` and fill the required **tag** input, for example `v0.1.1`.
-   You do not need to select a tag in GitHub's branch picker.
-3. CI checks out `refs/tags/<input>`, validates the Cargo version, builds and tests
+2. Open **Actions → Publish NuGet package → Run workflow**. Under **Use workflow
+   from**, select the release tag, for example `v0.1.1`. No tag input is needed.
+3. CI checks out the selected tag, validates the Cargo version, builds and tests
    the SDK, packs it, checks package identity and Linux x64 assets, and runs the
    tests as a consumer of the actual NuGet package.
 4. The publish job downloads those verified artifacts and pushes to NuGet.org.
@@ -56,11 +55,11 @@ a GitHub App nor a PAT is required. See [NuGet Trusted Publishing](https://learn
 The CLI equivalent, after replacing the example tag:
 
 ```sh
-gh workflow run dotnet-release.yml --repo SunDoge/shardpack --ref main -f tag=v0.1.1
+gh workflow run dotnet-release.yml --repo SunDoge/shardpack --ref v0.1.1
 ```
 
 Ordinary pushes, tags, PRs, and the existing **.NET CI** workflow do not publish.
-Invalid/missing tags or a version mismatch fail explicitly. Publishing is
+Selecting a branch or a version mismatch fails explicitly. Publishing is
 immutable: never replace a published package/version or move a release tag.
 If a run fails, inspect whether the package was accepted before retrying; a
 duplicate upload intentionally fails rather than silently accepting different
