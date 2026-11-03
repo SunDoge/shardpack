@@ -4,10 +4,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
-import tomllib
 from release_version import ROOT, python_version, version_key
 
 
@@ -127,10 +127,48 @@ bindings = "cffi"
         self.run_command("git", "add", ".")
         self.run_command("git", "commit", "-m", message)
 
-    def prepare(self, version, **kwargs):
+    def prepare(self, version="", *extra, **kwargs):
         return self.run_command(
-            "python3", "scripts/prepare-release.py", version, **kwargs
+            "python3", "scripts/prepare-release.py", version, *extra, **kwargs
         )
+
+    def test_automatic_initial_release(self):
+        self.prepare()
+        self.assertIn("## [0.1.0]", (self.root / "CHANGELOG.md").read_text())
+
+    def test_automatic_patch_and_no_empty_release(self):
+        self.run_command("git", "tag", "v0.1.0")
+        result = self.prepare()
+        self.assertIn("prepare=false", result.stdout)
+        self.assertEqual(self.run_command("git", "status", "--porcelain").stdout, "")
+        (self.root / "python" / "reader.py").write_text("# Python fix\n")
+        self.commit("fix: Python only")
+        self.prepare()
+        self.assertIn('version = "0.1.1"', (self.root / "Cargo.toml").read_text())
+        self.commit("chore: release v0.1.1")
+        self.run_command("git", "tag", "v0.1.1")
+        self.assertIn("prepare=false", self.prepare().stdout)
+        (self.root / "dotnet").mkdir()
+        (self.root / "dotnet" / "Reader.cs").write_text("// .NET fix\n")
+        self.commit("fix: .NET only")
+        self.prepare()
+        self.assertIn('version = "0.1.2"', (self.root / "Cargo.toml").read_text())
+
+    def test_pending_manual_version_preserved(self):
+        self.run_command("git", "tag", "v0.1.0")
+        (self.root / "python" / "reader.py").write_text("# fix\n")
+        self.commit("fix: reader")
+        self.prepare("", "--pending-version", "0.2.0")
+        self.assertIn('version = "0.2.0"', (self.root / "Cargo.toml").read_text())
+
+    def test_automatic_prerelease_promotes_to_stable(self):
+        self.prepare("0.2.0-rc.1")
+        self.commit("chore: release v0.2.0-rc.1")
+        self.run_command("git", "tag", "v0.2.0-rc.1")
+        (self.root / "python" / "reader.py").write_text("# fix\n")
+        self.commit("fix: reader")
+        self.prepare()
+        self.assertIn('version = "0.2.0"', (self.root / "Cargo.toml").read_text())
 
     def test_initial_release(self):
         self.prepare("0.1.0")

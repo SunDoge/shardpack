@@ -1,11 +1,17 @@
 name: Prepare release PR
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       version:
-        description: "Product version (e.g. 0.1.0 or 0.2.0-rc.1)"
-        required: true
+        description: "Optional version override (blank = automatic patch)"
+        required: false
         type: string
 
 permissions:
@@ -35,24 +41,39 @@ jobs:
         with:
           install_args: "cargo:release-plz"
 
+      - name: Preserve the pending release version
+        id: pending
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --head release-plz-product --base main --json headRefOid --jq '.[0].headRefOid // empty')
+          if [ -n "$sha" ]; then
+            git fetch origin "$sha"
+            version=$(git show "$sha:Cargo.toml" | python -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["workspace"]["package"]["version"])')
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Prepare shared version, lockfiles, and changelog
+        id: prepare
         env:
           RELEASE_VERSION: ${{ inputs.version }}
-        run: python scripts/prepare-release.py "$RELEASE_VERSION"
+          PENDING_VERSION: ${{ steps.pending.outputs.version }}
+        run: python scripts/prepare-release.py "$RELEASE_VERSION" --pending-version "$PENDING_VERSION"
 
       - name: Create or update the release PR
+        if: steps.prepare.outputs.prepare == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: release-plz-product
           base: main
-          commit-message: "chore: release v${{ inputs.version }}"
-          title: "chore: release v${{ inputs.version }}"
+          commit-message: "chore: release v${{ steps.prepare.outputs.version }}"
+          title: "chore: release v${{ steps.prepare.outputs.version }}"
           body: |
-            Prepared with release-plz. Rust and Python share the Cargo workspace version.
+            Prepared with release-plz. Rust, Python, and .NET share the Cargo workspace version.
 
             Review CHANGELOG.md and CI before merging. Merging creates a GitHub
-            release; start the PyPI workflow manually on its version tag.
+            release; start the PyPI and NuGet workflows manually for its version tag.
             No crates.io packages are published.
           add-paths: |
             Cargo.toml
