@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.1] - 2026-11-03
+
+- ci: automatically prepare release PRs after main updates (3fb21a0)
+- refactor: clarify dataset crate and unify encoded record types (0b1da7b)
+- ci: add Linux x64 NuGet trusted publishing workflow (7b4082c)
+- feat(dotnet): add bounded data loading and pooled record buffers (20f4f58)
+- test: regenerate Python fixtures with current format (8050dd4)
+- feat: add safe writer and loader contexts (7f1fd8e)
+- refactor: migrate CLI to usage-rs (00fd149)
+- feat: add SunDoge.ShardPack .NET streaming SDK with generated Rust interop (d0eb4a3)
+
 ## [0.1.0] - 2026-10-28
 
 - fix: avoid duplicate manylinux wheel options (9d375e8)
