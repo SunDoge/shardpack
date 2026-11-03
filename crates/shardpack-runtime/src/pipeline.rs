@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 
 use crate::{
     DatasetReader, DecryptionContext, EncodedRecord, Error, LoaderCheckpoint, NetworkPrefetch,
@@ -270,6 +270,10 @@ impl<T: Send + 'static> TrainingPipeline<T> {
         let mut tasks = Vec::new();
 
         let batch_start_sequence = restored.as_ref().map_or(0, |value| value.next_sequence);
+        decoded_tx.next_sequence.send_replace(batch_start_sequence);
+        transformed_tx
+            .next_sequence
+            .send_replace(batch_start_sequence);
         tasks.push(tokio::spawn(fetch_and_shuffle(
             reader,
             encoded_tx,
@@ -399,6 +403,7 @@ struct ByteSender<T> {
     budget: Arc<Semaphore>,
     max_bytes: usize,
     metrics: RuntimeMetrics,
+    next_sequence: watch::Sender<u64>,
 }
 
 impl<T> Clone for ByteSender<T> {
@@ -408,6 +413,7 @@ impl<T> Clone for ByteSender<T> {
             budget: self.budget.clone(),
             max_bytes: self.max_bytes,
             metrics: self.metrics.clone(),
+            next_sequence: self.next_sequence.clone(),
         }
     }
 }
@@ -443,6 +449,7 @@ fn byte_channel<T>(
             budget: Arc::new(Semaphore::new(bytes)),
             max_bytes: bytes,
             metrics,
+            next_sequence: watch::channel(0).0,
         },
         ByteReceiver(receiver),
     )
@@ -478,6 +485,26 @@ impl<T> ByteSender<T> {
             })
             .await
             .map_err(|_| Error::QueueClosed { stage })
+    }
+}
+
+impl<T> ByteSender<Sequenced<T>> {
+    /// Keep parallel completions from consuming the budget needed by an earlier
+    /// record. Only admission is serialized; decoding and transforms run in parallel.
+    async fn send_ordered(
+        &self,
+        value: Sequenced<T>,
+        bytes: usize,
+        stage: &'static str,
+    ) -> Result<()> {
+        let sequence = value.sequence;
+        let mut next = self.next_sequence.subscribe();
+        next.wait_for(|next| *next == sequence)
+            .await
+            .map_err(|_| Error::QueueClosed { stage })?;
+        self.send(value, bytes, stage).await?;
+        self.next_sequence.send_replace(sequence + 1);
+        Ok(())
     }
 }
 
@@ -628,7 +655,7 @@ async fn decode_worker<D, T>(
             value: decoded,
         };
         let size = decoded.byte_size();
-        if let Err(error) = output.send(decoded, size, "decode").await {
+        if let Err(error) = output.send_ordered(decoded, size, "decode").await {
             fail_pipeline(&errors, &cancelled, error).await;
             return;
         }
@@ -686,7 +713,7 @@ async fn transform_worker<D, X, T>(
             value: transformed,
         };
         let size = transformed.byte_size();
-        if let Err(error) = output.send(transformed, size, "transform").await {
+        if let Err(error) = output.send_ordered(transformed, size, "transform").await {
             fail_pipeline(&errors, &cancelled, error).await;
             return;
         }
@@ -1054,6 +1081,52 @@ mod tests {
         ));
         assert!(cancelled.load(Ordering::Acquire));
         worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordered_admission_leaves_budget_for_the_missing_record() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            // One record fills the entire budget. A later completion must not
+            // take it while the consumer is still waiting for sequence zero.
+            let (sender, mut receiver) = byte_channel(2, 4, RuntimeMetrics::default());
+            let later = sender.clone();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                started_tx.send(()).unwrap();
+                later
+                    .send_ordered(
+                        Sequenced {
+                            sequence: 1,
+                            value: Bytes::from_static(b"bbbb"),
+                        },
+                        4,
+                        "test",
+                    )
+                    .await
+                    .unwrap();
+            });
+            started_rx.await.unwrap();
+            tokio::task::yield_now().await;
+            assert_eq!(sender.budget.available_permits(), 4);
+            sender
+                .send_ordered(
+                    Sequenced {
+                        sequence: 0,
+                        value: Bytes::from_static(b"aaaa"),
+                    },
+                    4,
+                    "test",
+                )
+                .await
+                .unwrap();
+            let first = receiver.recv().await.unwrap();
+            assert_eq!(first.value.sequence, 0);
+            drop(first);
+            assert_eq!(receiver.recv().await.unwrap().value.sequence, 1);
+            task.await.unwrap();
+        })
+        .await
+        .expect("ordered admission must not deadlock");
     }
 
     #[tokio::test]
