@@ -1,0 +1,6 @@
+[tools]
+flatc = "25.2.10"
+
+[tasks.generate]
+description = "Regenerate the checked-in benchmark FlatBuffers accessors"
+run = "flatc --csharp -I schemas -o Generated schemas/detection.fbs schemas/media/image.fbs"

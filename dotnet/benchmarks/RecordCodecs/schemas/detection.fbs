@@ -1,0 +1,18 @@
+include "media/image.fbs";
+namespace ShardPack.Experiment;
+
+// Pixel-space xywh, contiguous zero-based COCO classes.
+struct Box {
+  x: float;
+  y: float;
+  width: float;
+  height: float;
+  label: int;
+}
+table DetectionSample {
+  id: ulong (id: 0);
+  image: ShardPack.Media.EncodedImage (required, id: 1);
+  boxes: [Box] (id: 2);
+}
+root_type DetectionSample;
+file_identifier "SPDS";

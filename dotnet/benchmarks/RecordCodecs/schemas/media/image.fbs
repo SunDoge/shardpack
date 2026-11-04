@@ -1,0 +1,10 @@
+namespace ShardPack.Media;
+
+// Encoded JPEG/PNG bytes. Dimensions are stored-pixel dimensions before EXIF
+// orientation. The dataset reader must not silently rotate associated boxes.
+table EncodedImage {
+  mime: string (required, id: 0);
+  width: uint (id: 1);
+  height: uint (id: 2);
+  data: [ubyte] (required, id: 3);
+}

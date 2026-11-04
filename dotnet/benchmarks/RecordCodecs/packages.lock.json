@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "Apache.Fory": {
+        "type": "Direct",
+        "requested": "[1.7.7, )",
+        "resolved": "1.7.7",
+        "contentHash": "0Jb7hlgKiVRDIT7lc4F2PsFORtSmC0n4jPG9bWK/J6NF6gJIwl0Co5XfOfQ8ysoDOGugiY3yHoI7JhxPDYXUoQ=="
+      },
+      "Google.FlatBuffers": {
+        "type": "Direct",
+        "requested": "[25.2.10, )",
+        "resolved": "25.2.10",
+        "contentHash": "z3ykbSRsy6oqMzeZ84a+K8rnMJ/ysVikar8r2yUhHz0HSxIjBpj53mZvpu6LjLEm5fLLWQsCdelJwL1nu7lloA=="
+      },
+      "OpenCvSharp5": {
+        "type": "Direct",
+        "requested": "[5.0.0.20261018, )",
+        "resolved": "5.0.0.20261018",
+        "contentHash": "AVRSdqht1PRr9QfQjVzd6CM4o4IxHS5VeT94ZEEKdMHSQIx7U+VR0O3OzCxRROirJlmH6oz+MMw0SUBxKEN3Qw=="
+      },
+      "OpenCvSharp5.official.runtime.linux-x64.slim": {
+        "type": "Direct",
+        "requested": "[5.0.0.20261018, )",
+        "resolved": "5.0.0.20261018",
+        "contentHash": "DsTiIPBVwhNAlbh3D5NfcPr6IVUneoVt5YuoGHr52ZX5VNz0v9Y+pk9PASVYqVKS+DlplNGhQTwZjhp79rXhKw=="
+      },
+      "sundoge.shardpack": {
+        "type": "Project"
+      }
+    }
+  }
+}
