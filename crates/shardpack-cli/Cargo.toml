@@ -13,6 +13,7 @@ usage-rs.workspace = true
 hex.workspace = true
 prost-types.workspace = true
 shardpack-catalog = { path = "../shardpack-catalog" }
+shardpack-codec = { path = "../shardpack-codec" }
 shardpack-config = { path = "../shardpack-config" }
 shardpack-dataset = { path = "../shardpack-dataset" }
 shardpack-format = { path = "../shardpack-format" }

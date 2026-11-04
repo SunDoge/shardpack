@@ -15,6 +15,8 @@ use shardpack_storage::{S3Options, Store, StoreRegistry};
 use snafu::Snafu;
 use usage_rs::{Args, Cli, Subcommands, ValueEnum};
 
+mod schema_bundle;
+
 #[derive(Debug, Snafu)]
 enum Error {
     #[snafu(display("configuration failed: {source}"))]
@@ -44,6 +46,8 @@ enum Error {
     InvalidAnalysisOption { reason: &'static str },
     #[snafu(display("refusing destructive GC without --yes"))]
     ConfirmationRequired,
+    #[snafu(display("schema bundle error: {reason}"))]
+    SchemaBundle { reason: String },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -101,6 +105,20 @@ struct Cli {
 
 #[derive(Debug, Subcommands)]
 enum Command {
+    /// Pack a local schema directory for --embedded-schema-file.
+    SchemaPack {
+        directory: PathBuf,
+        #[usage(long)]
+        entrypoint: String,
+        #[usage(long)]
+        output: PathBuf,
+    },
+    /// Export a snapshot's embedded multi-file schema to a new local directory.
+    SchemaExport {
+        snapshot_key: String,
+        #[usage(long)]
+        output: PathBuf,
+    },
     /// Print the validated summary of one manifest.
     Inspect {
         #[usage(value_enum)]
@@ -280,6 +298,14 @@ where
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    if let Command::SchemaPack {
+        directory,
+        entrypoint,
+        output,
+    } = &cli.command
+    {
+        return schema_bundle::pack(directory, entrypoint, output);
+    }
     let storage = open_storage(&cli)?;
     let store = storage.selected_store.clone();
     let catalog = Catalog::new(
@@ -288,6 +314,19 @@ async fn run(cli: Cli) -> Result<()> {
     )
     .map_err(|source| Error::Catalog { source })?;
     match cli.command {
+        Command::SchemaPack { .. } => unreachable!("handled before opening storage"),
+        Command::SchemaExport {
+            snapshot_key,
+            output,
+        } => {
+            let snapshot = load_snapshot(&store, &snapshot_key)
+                .await
+                .map_err(|source| Error::Dataset { source })?;
+            schema_bundle::export(
+                snapshot.record_schema.as_ref().expect("validated snapshot"),
+                &output,
+            )
+        }
         Command::Inspect { kind, key } => inspect(&store, kind, &key).await,
         Command::Verify { layout_key } => verify(&storage.registry, &store, &layout_key).await,
         Command::AnalyzeCompression {
@@ -970,6 +1009,71 @@ mod tests {
         assert_eq!(analysis.blocks, 1);
         assert!(analysis.none_stored_bytes > 1024 * 1024);
         assert!(analysis.savings_percent() > 90.0);
+    }
+
+    #[tokio::test]
+    async fn embedded_bundle_survives_import_and_snapshot_export() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("store");
+        let schemas = temp.path().join("schemas");
+        std::fs::create_dir_all(root.join("incoming")).unwrap();
+        std::fs::create_dir_all(schemas.join("media")).unwrap();
+        std::fs::write(schemas.join("root.fbs"), b"include \"media/image.fbs\";").unwrap();
+        std::fs::write(schemas.join("media/image.fbs"), b"namespace Media;").unwrap();
+        let bundle = temp.path().join("schema.bundle");
+        run(local_cli(
+            &root,
+            Command::SchemaPack {
+                directory: schemas,
+                entrypoint: "root.fbs".into(),
+                output: bundle.clone(),
+            },
+        ))
+        .await
+        .unwrap();
+        let schema_id = hex::encode(shardpack_codec::schema_id_for(
+            &std::fs::read(&bundle).unwrap(),
+        ));
+        let mut writer = ShardWriter::new(Vec::new(), WriterOptions::default()).unwrap();
+        writer.add_record([1; 16], 0, b"record").unwrap();
+        std::fs::write(root.join("incoming/data.spk"), writer.finish().unwrap().0).unwrap();
+        run(local_cli(
+            &root,
+            Command::Import {
+                dataset_id: "bundle-test".into(),
+                codec_name: "flatbuffers".into(),
+                codec_version: 1,
+                schema_id,
+                embedded_schema_file: Some(bundle),
+                description: None,
+                snapshot_prefix: "snapshots".into(),
+                layout_prefix: "layouts".into(),
+                target_shard_bytes: 1024,
+                max_shard_bytes: None,
+                target_block_bytes: 1024,
+                block_codec: Codec::None,
+                shards: vec!["incoming/data.spk".into()],
+            },
+        ))
+        .await
+        .unwrap();
+        let store = shardpack_storage::Store::filesystem(&root).unwrap();
+        let snapshots = store.list_keys("snapshots/").await.unwrap();
+        assert_eq!(snapshots.len(), 1);
+        let out = temp.path().join("exported");
+        run(local_cli(
+            &root,
+            Command::SchemaExport {
+                snapshot_key: snapshots[0].clone(),
+                output: out.clone(),
+            },
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read(out.join("media/image.fbs")).unwrap(),
+            b"namespace Media;"
+        );
     }
 
     #[tokio::test]

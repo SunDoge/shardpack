@@ -22,6 +22,9 @@ message RecordSchemaDescriptor {
   string codec_name = 1; uint32 codec_version = 2; bytes schema_id = 3;
   optional bytes embedded_schema = 4;
 }
+// Serialized inside embedded_schema with a versioned magic prefix.
+message SchemaBundle { string entrypoint = 1; repeated SchemaFile files = 2; }
+message SchemaFile { string path = 1; bytes content = 2; }
 message SplitDescriptor {
   string name = 1; uint64 record_count = 2; string assignment = 3;
   optional uint32 hash_upper_bound = 4;

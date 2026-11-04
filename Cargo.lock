@@ -2178,6 +2178,7 @@ dependencies = [
  "hex",
  "prost-types",
  "shardpack-catalog",
+ "shardpack-codec",
  "shardpack-config",
  "shardpack-dataset",
  "shardpack-format",

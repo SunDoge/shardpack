@@ -8,6 +8,8 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/shardpack.v1.rs"));
 }
 
+pub mod schema_bundle;
+
 /// Returns a shard's physical location after its containing layout has been
 /// validated.
 #[must_use]
