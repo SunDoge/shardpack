@@ -2137,7 +2137,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-cache"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-stream",
  "blake3",
@@ -2155,7 +2155,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-catalog"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "bytes",
@@ -2195,7 +2195,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-codec"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "bytes",
@@ -2205,7 +2205,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-config"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "config",
  "secrecy",
@@ -2217,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-dataset"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "blake3",
@@ -2237,7 +2237,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-ffi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "csbindgen",
  "shardpack-format",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-format"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes-gcm",
  "aws-lc-rs",
@@ -2267,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-gc"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-manifest"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "hex",
@@ -2297,7 +2297,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-python"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "hex",
@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-runtime"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-stream",
  "blake3",
@@ -2337,7 +2337,7 @@ dependencies = [
 
 [[package]]
 name = "shardpack-storage"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "futures-util",
