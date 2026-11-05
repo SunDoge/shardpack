@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2] - 2026-11-05
+
+- feat: bundle and export multi-file record schemas (3197ed1)
+- bench: compare C# FlatBuffers and Fory record layouts (5248e78)
+- ci: select NuGet release version from workflow ref (2cb150a)
+- fix(runtime): preserve admission order under byte backpressure (489c0f7)
+
 ## [0.1.1] - 2026-11-03
 
 - ci: automatically prepare release PRs after main updates (3fb21a0)
